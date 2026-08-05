@@ -54,9 +54,22 @@ async function firstVisible(
   return null;
 }
 
+async function firstVisibleNow(
+  page: Page,
+  selectors: readonly string[],
+) {
+  for (const selector of selectors) {
+    const candidate = page.locator(selector).first();
+    if (await candidate.isVisible().catch(() => false)) return candidate;
+  }
+  return null;
+}
+
 interface BrowserElement {
   isContentEditable: boolean;
   textContent: string | null;
+  value?: string;
+  querySelector(selector: string): BrowserElement | null;
 }
 
 interface BrowserParticipantElement {
@@ -75,9 +88,24 @@ interface BrowserGlobal {
 async function verifyRenderedText(page: Page, text: string): Promise<boolean> {
   return page.waitForFunction((expected) => {
     const browser = globalThis as unknown as BrowserGlobal;
+    const composerSelector = [
+      'textarea[aria-label*="message" i]',
+      'textarea[placeholder*="message" i]',
+      '[contenteditable="true"][aria-label*="message" i]',
+      '[contenteditable="true"][data-placeholder*="message" i]',
+    ].join(',');
+    const composers = Array.from(browser.document.querySelectorAll(composerSelector));
+    if (composers.some((element) => {
+      const style = browser.getComputedStyle(element);
+      return style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && (element.value ?? element.textContent ?? '').trim() !== '';
+    })) {
+      return false;
+    }
     const elements = Array.from(browser.document.querySelectorAll('div, span, p'));
     return elements.some((element) => {
-      if (element.isContentEditable) return false;
+      if (element.isContentEditable || element.querySelector(composerSelector) !== null) return false;
       const style = browser.getComputedStyle(element);
       if (style.display === 'none' || style.visibility === 'hidden') return false;
       return element.textContent?.trim() === expected;
@@ -137,11 +165,13 @@ async function postDisclosure(
   config: VoltaDisclosureConfig,
   signal?: AbortSignal,
 ): Promise<void> {
-  const button = await firstVisible(page, CHAT_BUTTON_SELECTORS, signal);
-  if (!button) throw new Error('disclosure_failed: Google Meet chat button was not found');
-  await button.click({ timeout: STEP_TIMEOUT_MS });
-
-  const input = await firstVisible(page, CHAT_INPUT_SELECTORS, signal);
+  let input = await firstVisibleNow(page, CHAT_INPUT_SELECTORS);
+  if (input === null) {
+    const button = await firstVisible(page, CHAT_BUTTON_SELECTORS, signal);
+    if (!button) throw new Error('disclosure_failed: Google Meet chat button was not found');
+    await button.click({ timeout: STEP_TIMEOUT_MS });
+    input = await firstVisible(page, CHAT_INPUT_SELECTORS, signal);
+  }
   if (!input) throw new Error('disclosure_failed: Google Meet chat input was not found');
   await input.fill(config.text, { timeout: STEP_TIMEOUT_MS });
   const renderedAt = new Date().toISOString();

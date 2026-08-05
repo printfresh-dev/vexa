@@ -40,16 +40,33 @@ function fakePage(input: {
   participantSets: ParticipantElement[][];
   actions: string[];
   advanceTime?: (milliseconds: number) => void;
+  chatInitiallyOpen?: boolean;
+  submissionRenders?: boolean;
 }): Page {
   let participantRead = 0;
+  let chatOpen = input.chatInitiallyOpen ?? false;
+  let composerText = '';
+  let renderedText = false;
   const chatButton = {
     isVisible: async () => true,
-    click: async () => { input.actions.push('chat-click'); },
+    click: async () => {
+      input.actions.push('chat-click');
+      chatOpen = !chatOpen;
+    },
   };
   const chatInput = {
-    isVisible: async () => true,
-    fill: async (text: string) => { input.actions.push(`fill:${text}`); },
-    press: async (key: string) => { input.actions.push(`press:${key}`); },
+    isVisible: async () => chatOpen,
+    fill: async (text: string) => {
+      composerText = text;
+      input.actions.push(`fill:${text}`);
+    },
+    press: async (key: string) => {
+      input.actions.push(`press:${key}`);
+      if (key === 'Enter' && input.submissionRenders !== false) {
+        composerText = '';
+        renderedText = true;
+      }
+    },
   };
   return {
     locator(selector: string) {
@@ -63,10 +80,14 @@ function fakePage(input: {
         };
       }
       return {
-        first: () => selector.includes('textarea') || selector.includes('textbox') ? chatInput : chatButton,
+        first: () => selector.includes('textarea') || selector.includes('contenteditable')
+          ? chatInput
+          : chatButton,
       };
     },
-    waitForFunction: async () => undefined,
+    waitForFunction: async () => {
+      if (composerText !== '' || !renderedText) throw new Error('message was not rendered');
+    },
     waitForTimeout: async (milliseconds: number) => {
       input.actions.push('participant-wait');
       input.advanceTime?.(milliseconds);
@@ -104,6 +125,34 @@ check('does not open chat before a remote participant appears', actions.indexOf(
 check('posts the exact configured disclosure', actions.includes(`fill:${text}`));
 check('submits the message', actions.includes('press:Enter'));
 check('returns disclosed participants', outcome.status === 'disclosed' && outcome.participantKeys.has('alice'));
+
+const openChatActions: string[] = [];
+await discloseInGoogleMeet(
+  fakePage({
+    participantSets: [[bot, alice]],
+    actions: openChatActions,
+    chatInitiallyOpen: true,
+  }),
+  'connection-open-chat',
+  config,
+);
+check('does not toggle an already-open chat panel closed', !openChatActions.includes('chat-click'));
+
+let unsentDisclosureRejected = false;
+try {
+  await discloseInGoogleMeet(
+    fakePage({
+      participantSets: [[bot, alice]],
+      actions: [],
+      submissionRenders: false,
+    }),
+    'connection-unsent',
+    config,
+  );
+} catch (error) {
+  unsentDisclosureRejected = String(error).includes('sent text could not be verified');
+}
+check('rejects a disclosure retained only in the composer', unsentDisclosureRejected);
 
 const bob = participant('bob', 'Bob Example');
 const monitorActions: string[] = [];
