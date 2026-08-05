@@ -28,8 +28,10 @@ import type { Act, LifecycleEvent } from './contracts.js';
 import { createOrchestrator } from './orchestrator.js';
 import { createHttpLifecycleSink } from './adapters/lifecycle-http.js';
 import { createRedisTranscriptSink, redisClientFrom } from './adapters/transcript-redis.js';
+import { createHttpTranscriptSink } from './adapters/transcript-http.js';
 import { createRedisActsSource, redisActsClientFrom } from './adapters/acts-redis.js';
 import { createBrowserJoinDriver } from './join-driver.js';
+import type { VoltaDisclosureConfig } from './disclosure.js';
 import { createBotPipeline, createLivePipeline, createTranscribe, serr, type BotPipeline } from './pipeline.js';
 import { createBotRecordingSink } from './recording.js';
 import { createCaptureSignalRecorder, wrapTranscribeWithTap, type CaptureSignalRecorder } from './telemetry.js';
@@ -170,15 +172,49 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     ? createHttpLifecycleSink({ callbackUrl: inv.meetingApiCallbackUrl, internalSecret: inv.internalSecret })
     : consoleLifecycleSink();
 
-  // transcript.v1 + acts.v1: redis. Connect LAZILY — constructing the clients does NOT dial
-  // redis, so an unreachable broker doesn't crash the composition root; the first publish/
-  // subscribe surfaces the error and the orchestrator drives to a clean terminal `failed`.
-  const transcriptClient = redisClientFrom(inv.redisUrl);
+  // Volta replaces Vexa's Redis transcript fan-out with a load-bearing HTTP callback. The
+  // callback acknowledges only after staging the segment durably; stock Vexa deployments
+  // retain the Redis sink.
+  const transcriptCallbackValues = [
+    env.VOLTA_TRANSCRIPT_CALLBACK_URL,
+    env.VOLTA_TRANSCRIPT_INTERNAL_SECRET,
+  ];
+  if (transcriptCallbackValues.some((value) => value !== undefined)
+      && transcriptCallbackValues.some((value) => value === undefined || value.length === 0)) {
+    throw new Error('Volta transcript configuration must set callback URL and internal secret together');
+  }
+  const transcriptClient = transcriptCallbackValues[0] === undefined
+    ? redisClientFrom(inv.redisUrl)
+    : undefined;
   const actsClient = redisActsClientFrom(inv.redisUrl);
-  const transcript: TranscriptSink = createRedisTranscriptSink({
-    client: transcriptClient, meetingId, nativeMeetingId: inv.nativeMeetingId,
-  });
+  const transcript: TranscriptSink = transcriptCallbackValues[0] === undefined
+    ? createRedisTranscriptSink({
+        client: transcriptClient!, meetingId, nativeMeetingId: inv.nativeMeetingId,
+      })
+    : createHttpTranscriptSink({
+        callbackUrl: transcriptCallbackValues[0],
+        internalSecret: transcriptCallbackValues[1]!,
+        meetingId,
+        nativeMeetingId: inv.nativeMeetingId,
+      });
   const liveActs = createRedisActsSource({ client: actsClient, meetingId });
+
+  const disclosureValues = [
+    env.VOLTA_DISCLOSURE_TEXT,
+    env.VOLTA_DISCLOSURE_CALLBACK_URL,
+    env.VOLTA_DISCLOSURE_INTERNAL_SECRET,
+  ];
+  if (disclosureValues.some((value) => value !== undefined)
+      && disclosureValues.some((value) => value === undefined || value.length === 0)) {
+    throw new Error('Volta disclosure configuration must set text, callback URL, and internal secret together');
+  }
+  const disclosure: VoltaDisclosureConfig | undefined = disclosureValues[0] === undefined
+    ? undefined
+    : {
+        text: disclosureValues[0],
+        callbackUrl: disclosureValues[1]!,
+        internalSecret: disclosureValues[2]!,
+      };
 
   // ── 2b: launch the browser + wire join / capture / recording / speak (L4-gated). ──
   // Browser-launch failure must NOT crash the root: fall back to the no-browser drivers so the
@@ -209,7 +245,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
 
   try {
     session = await launchBrowser(inv);                                   // L4 (O6/VM)
-    join = createBrowserJoinDriver(session.page, inv);
+    join = createBrowserJoinDriver(session.page, inv, disclosure);
     botPipeline = createBotPipeline(inv, transcript, {
       // When recording, tee every STT round-trip to <session>.stt.jsonl (the capture/STT/assembly bisect).
       transcribe: signalRecorder ? wrapTranscribeWithTap(createTranscribe(inv), signalRecorder.path) : undefined,
@@ -301,9 +337,9 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     await pipeline.stop().catch(() => { /* best-effort */ });
     await signalRecorder?.close().catch(() => { /* best-effort */ });
     if (session) await session.close().catch(() => { /* best-effort */ });
-    // Quit the redis connections on teardown (best-effort — a quit failure must not change the
-    // exit code; they may never have connected if redis was unreachable).
-    await transcriptClient.quit().catch(() => { /* best-effort */ });
+    // Quit the Redis connections on teardown (best-effort — Volta's transcript callback does
+    // not allocate a transcript Redis client).
+    await transcriptClient?.quit().catch(() => { /* best-effort */ });
     await actsClient.quit().catch(() => { /* best-effort */ });
   }
 }

@@ -207,6 +207,61 @@ async function main(): Promise<void> {
     check('pipeline-fail: events conform', allConform(lc.events));
   }
 
+  // ── disclosure gate: browser verification completes before capture starts ──
+  {
+    const lc = recordingSink();
+    const order: string[] = [];
+    const join: JoinDriver = {
+      ...mockJoin('admitted'),
+      async disclose() { order.push('disclosed'); },
+    };
+    const pipe = {
+      async start() { order.push('capture-started'); },
+      async stop() { /* */ },
+    };
+    const o = createOrchestrator(inv(), {
+      lifecycle: lc,
+      join,
+      pipeline: pipe,
+      acts: noopActs(),
+      aloneness: noopAloneness(),
+    });
+    const runP = o.run();
+    setTimeout(() => { void o.handle({ action: 'leave' }); }, 5);
+    await runP;
+    check(
+      'disclosure-gate: disclosure is verified before capture starts',
+      JSON.stringify(order) === JSON.stringify(['disclosed', 'capture-started']),
+      JSON.stringify(order),
+    );
+  }
+
+  // ── disclosure gate: failure leaves immediately and capture never starts ──
+  {
+    const lc = recordingSink();
+    let captureStarted = false;
+    let leaveReason = '';
+    const join: JoinDriver = {
+      ...mockJoin('admitted'),
+      async disclose() { throw new Error('disclosure_failed'); },
+      async leave(reason) { leaveReason = reason; },
+    };
+    const res = await createOrchestrator(inv(), {
+      lifecycle: lc,
+      join,
+      pipeline: {
+        async start() { captureStarted = true; },
+        async stop() { /* */ },
+      },
+      acts: noopActs(),
+      aloneness: noopAloneness(),
+    }).run();
+    check(
+      'disclosure-gate: failure is terminal and capture remains stopped',
+      res.status === 'failed' && !captureStarted && leaveReason === 'disclosure_failed',
+    );
+  }
+
   // ── host removal while active → completed(evicted) ──
   {
     const lc = recordingSink();

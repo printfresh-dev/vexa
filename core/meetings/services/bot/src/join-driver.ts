@@ -15,6 +15,7 @@ import {
 } from '@vexa/join';
 import type { BotStatus } from './contracts.js';
 import type { Invocation } from './config.js';
+import { discloseInGoogleMeet, type VoltaDisclosureConfig } from './disclosure.js';
 import type { JoinDriver, JoinOutcome, JoinResult } from './ports.js';
 
 /**
@@ -56,7 +57,11 @@ function joinPlatform(p: string): JoinPlatform {
   return (p === 'teams' || p === 'zoom' || p === 'jitsi') ? p : 'google_meet';
 }
 
-export function createBrowserJoinDriver(page: Page, inv: Invocation): JoinDriver {
+export function createBrowserJoinDriver(
+  page: Page,
+  inv: Invocation,
+  disclosure?: VoltaDisclosureConfig,
+): JoinDriver {
   const platform = joinPlatform(inv.platform);
   return {
     async join(report): Promise<JoinResult> {
@@ -86,6 +91,16 @@ export function createBrowserJoinDriver(page: Page, inv: Invocation): JoinDriver
       const outcome: JoinOutcome = (r.state === 'blocked' || r.state === 'needs_human_help') ? 'blocked' : 'rejected';
       return { outcome, reason: `join ended in state '${r.state}' without admission` };
     },
+    ...(disclosure === undefined
+      ? {}
+      : {
+          async disclose() {
+            if (platform !== 'google_meet') {
+              throw new Error('disclosure_failed: Volta disclosure only supports Google Meet');
+            }
+            await discloseInGoogleMeet(page, inv.connectionId ?? '', disclosure);
+          },
+        }),
     onRemoval(cb) {
       if (platform === 'teams') return startTeamsRemovalMonitor(page, cb);
       if (platform === 'zoom')  return startZoomRemovalMonitor(page, cb);

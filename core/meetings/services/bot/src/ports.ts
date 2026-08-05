@@ -38,6 +38,8 @@ export interface JoinDriver {
    *  (awaiting_admission / needs_help / active). Resolves with the verdict — a bare `JoinOutcome`
    *  or a `JoinResult` that also carries the failure's human reason text (#926). */
   join(report: (s: BotStatus) => void | Promise<void>): Promise<JoinOutcome | JoinResult>;
+  /** Render and verify the in-meeting disclosure before any capture pipeline starts. */
+  disclose?(): Promise<void>;
   /** Watch for being removed from the meeting while active; returns a stop fn. */
   onRemoval(cb: () => void): () => void;
   /** Leave the meeting (best-effort; never throws fatally). */

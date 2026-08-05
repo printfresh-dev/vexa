@@ -290,6 +290,24 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
     }
     if (cur !== 'active') await emit('active');   // the join driver may already have reported active
 
+    // A configured disclosure is load-bearing: capture, recording, and STT stay stopped until the
+    // browser proves the exact disclosure text is visible and its callback is acknowledged.
+    if (deps.join.disclose) {
+      try {
+        await deps.join.disclose();
+      } catch (e) {
+        await deps.join.leave('disclosure_failed').catch(() => { /* best-effort */ });
+        unsubscribe();
+        await emit('failed', {
+          failure_stage: 'active',
+          completion_reason: 'join_failure',
+          reason: String(e),
+          exit_code: 1,
+        });
+        return { exitCode: 1, status: 'failed', completionReason: 'join_failure' };
+      }
+    }
+
     // ── active: start the engine, wire removal + aloneness + the optional time cap (acts already subscribed) ──
     try {
       await deps.pipeline.start();
