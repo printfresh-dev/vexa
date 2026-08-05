@@ -213,7 +213,7 @@ async function main(): Promise<void> {
     const order: string[] = [];
     const join: JoinDriver = {
       ...mockJoin('admitted'),
-      async disclose() { order.push('disclosed'); },
+      async disclose() { order.push('disclosed'); return 'disclosed' as const; },
     };
     const pipe = {
       async start() { order.push('capture-started'); },
@@ -233,6 +233,32 @@ async function main(): Promise<void> {
       'disclosure-gate: disclosure is verified before capture starts',
       JSON.stringify(order) === JSON.stringify(['disclosed', 'capture-started']),
       JSON.stringify(order),
+    );
+  }
+
+  // ── empty meeting: leave cleanly without ever starting capture ──
+  {
+    const lc = recordingSink();
+    let captureStarted = false;
+    const join: JoinDriver = {
+      ...mockJoin('admitted'),
+      async disclose() { return 'no_participant' as const; },
+    };
+    const res = await createOrchestrator(inv(), {
+      lifecycle: lc,
+      join,
+      pipeline: {
+        async start() { captureStarted = true; },
+        async stop() { /* */ },
+      },
+      acts: noopActs(),
+      aloneness: noopAloneness(),
+    }).run();
+    check(
+      'disclosure-gate: an empty meeting exits startup_alone without capture',
+      res.status === 'completed'
+        && last(lc.events).completion_reason === 'startup_alone'
+        && !captureStarted,
     );
   }
 

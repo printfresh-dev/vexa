@@ -15,8 +15,12 @@ import {
 } from '@vexa/join';
 import type { BotStatus } from './contracts.js';
 import type { Invocation } from './config.js';
-import { discloseInGoogleMeet, type VoltaDisclosureConfig } from './disclosure.js';
-import type { JoinDriver, JoinOutcome, JoinResult } from './ports.js';
+import {
+  discloseInGoogleMeet,
+  startGoogleMeetDisclosureMonitor,
+  type VoltaDisclosureConfig,
+} from './disclosure.js';
+import type { DisclosureOutcome, JoinDriver, JoinOutcome, JoinResult } from './ports.js';
 
 /**
  * Map @vexa/join's typed AdmissionError `outcome` → a JoinOutcome (G1).
@@ -62,6 +66,7 @@ export function createBrowserJoinDriver(
   inv: Invocation,
   disclosure?: VoltaDisclosureConfig,
 ): JoinDriver {
+  let disclosedParticipantKeys: ReadonlySet<string> | undefined;
   const platform = joinPlatform(inv.platform);
   return {
     async join(report): Promise<JoinResult> {
@@ -94,11 +99,29 @@ export function createBrowserJoinDriver(
     ...(disclosure === undefined
       ? {}
       : {
-          async disclose() {
+          async disclose(signal?: AbortSignal): Promise<DisclosureOutcome> {
             if (platform !== 'google_meet') {
               throw new Error('disclosure_failed: Volta disclosure only supports Google Meet');
             }
-            await discloseInGoogleMeet(page, inv.connectionId ?? '', disclosure);
+            const outcome = await discloseInGoogleMeet(
+              page,
+              inv.connectionId ?? '',
+              disclosure,
+              signal,
+            );
+            if (outcome.status === 'disclosed') {
+              disclosedParticipantKeys = outcome.participantKeys;
+            }
+            return outcome.status;
+          },
+          startDisclosureMonitor() {
+            if (disclosedParticipantKeys === undefined) return () => {};
+            return startGoogleMeetDisclosureMonitor(
+              page,
+              inv.connectionId ?? '',
+              disclosure,
+              disclosedParticipantKeys,
+            );
           },
         }),
     onRemoval(cb) {

@@ -290,12 +290,42 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
     }
     if (cur !== 'active') await emit('active');   // the join driver may already have reported active
 
-    // A configured disclosure is load-bearing: capture, recording, and STT stay stopped until the
-    // browser proves the exact disclosure text is visible and its callback is acknowledged.
+    // A configured disclosure is load-bearing: wait for a real participant, then prove the exact
+    // notice is visible before capture, recording, or STT starts. A stop remains responsive while
+    // waiting, and a no-show is a clean startup_alone completion rather than a capture failure.
     if (deps.join.disclose) {
+      const abortDisclosure = new AbortController();
       try {
-        await deps.join.disclose();
+        const disclosureResult = await Promise.race([
+          deps.join.disclose(abortDisclosure.signal).then((outcome) => ({
+            kind: 'disclosure' as const,
+            outcome,
+          })),
+          ended.then((reason) => ({ kind: 'ended' as const, reason })),
+        ]);
+        if (disclosureResult.kind === 'ended') {
+          abortDisclosure.abort();
+          await deps.join.leave(disclosureResult.reason).catch(() => { /* best-effort */ });
+          unsubscribe();
+          await emit('completed', {
+            completion_reason: disclosureResult.reason,
+            reason: 'stopped while awaiting participant disclosure',
+            exit_code: 0,
+          });
+          return { exitCode: 0, status: 'completed', completionReason: disclosureResult.reason };
+        }
+        if (disclosureResult.outcome === 'no_participant') {
+          await deps.join.leave('startup_alone').catch(() => { /* best-effort */ });
+          unsubscribe();
+          await emit('completed', {
+            completion_reason: 'startup_alone',
+            reason: 'no remote participant arrived before the disclosure deadline',
+            exit_code: 0,
+          });
+          return { exitCode: 0, status: 'completed', completionReason: 'startup_alone' };
+        }
       } catch (e) {
+        abortDisclosure.abort();
         await deps.join.leave('disclosure_failed').catch(() => { /* best-effort */ });
         unsubscribe();
         await emit('failed', {
@@ -320,6 +350,7 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
       await emit('failed', { failure_stage: 'active', completion_reason: 'join_failure', reason: String(e), exit_code: 1 });
       return { exitCode: 1, status: 'failed', completionReason: 'join_failure' };
     }
+    const stopDisclosureMonitor = deps.join.startDisclosureMonitor?.() ?? (() => {});
     const stopRemoval = deps.join.onRemoval(() => signalEnd?.('evicted'));
     const stopAloneness = deps.aloneness.onAlone(() => signalEnd?.('left_alone'));
     const cap = opts.maxActiveMs && opts.maxActiveMs > 0
@@ -331,6 +362,7 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
     // ── graceful teardown (best-effort; never masks the completion reason) ──
     if (cap) clearTimeout(cap);
     unsubscribe();
+    stopDisclosureMonitor();
     stopAloneness();
     stopRemoval();
     await deps.pipeline.stop().catch(() => { /* best-effort */ });

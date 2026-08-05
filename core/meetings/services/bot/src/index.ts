@@ -203,10 +203,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     env.VOLTA_DISCLOSURE_TEXT,
     env.VOLTA_DISCLOSURE_CALLBACK_URL,
     env.VOLTA_DISCLOSURE_INTERNAL_SECRET,
+    env.VOLTA_DISCLOSURE_PARTICIPANT_DEADLINE_AT,
   ];
   if (disclosureValues.some((value) => value !== undefined)
       && disclosureValues.some((value) => value === undefined || value.length === 0)) {
-    throw new Error('Volta disclosure configuration must set text, callback URL, and internal secret together');
+    throw new Error(
+      'Volta disclosure configuration must set text, callback URL, internal secret, and participant deadline together',
+    );
   }
   const disclosure: VoltaDisclosureConfig | undefined = disclosureValues[0] === undefined
     ? undefined
@@ -214,6 +217,8 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
         text: disclosureValues[0],
         callbackUrl: disclosureValues[1]!,
         internalSecret: disclosureValues[2]!,
+        botName: inv.botName,
+        participantDeadlineAt: disclosureValues[3]!,
       };
 
   // ── 2b: launch the browser + wire join / capture / recording / speak (L4-gated). ──
