@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Page } from '@vexa/remote-browser';
 
-const CHAT_BUTTON_SELECTORS = [
+const GOOGLE_CHAT_BUTTON_SELECTORS = [
   'button[aria-label*="chat" i]',
   '[role="button"][aria-label*="chat" i]',
   'button[data-tooltip*="chat" i]',
@@ -9,12 +9,35 @@ const CHAT_BUTTON_SELECTORS = [
   'button:has(i.google-material-icons:text-is("chat"))',
 ] as const;
 
-const CHAT_INPUT_SELECTORS = [
+const ZOOM_CHAT_BUTTON_SELECTORS = [
+  'button[aria-label*="chat" i]',
+  '[role="button"][aria-label*="chat" i]',
+  'button[data-title*="chat" i]',
+  '[role="button"][data-title*="chat" i]',
+] as const;
+
+const GOOGLE_CHAT_INPUT_SELECTORS = [
   'textarea[aria-label*="message" i]',
   'textarea[placeholder*="message" i]',
   '[contenteditable="true"][aria-label*="message" i]',
   '[contenteditable="true"][data-placeholder*="message" i]',
 ] as const;
+
+const ZOOM_CHAT_INPUT_SELECTORS = [
+  'textarea[placeholder*="message" i]',
+  'textarea[aria-label*="message" i]',
+  '.chat-box__chat-textarea',
+  '[contenteditable="true"][aria-label*="message" i]',
+] as const;
+
+const ZOOM_PARTICIPANT_SELECTORS = [
+  '.participants-item__display-name',
+  '.video-avatar__avatar-footer',
+  '.video-avatar__avatar-name',
+  '[class*="participant"] [class*="display-name"]',
+] as const;
+
+export type DisclosurePlatform = 'google_meet' | 'zoom';
 
 const STEP_TIMEOUT_MS = 10_000;
 const PARTICIPANT_POLL_MS = 250;
@@ -113,12 +136,23 @@ async function verifyRenderedText(page: Page, text: string): Promise<boolean> {
   }, text, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
 }
 
-async function remoteParticipantKeys(page: Page, botName: string): Promise<Set<string>> {
+async function remoteParticipantKeys(
+  page: Page,
+  botName: string,
+  platform: DisclosurePlatform,
+): Promise<Set<string>> {
   const normalizedBotName = botName.trim().toLocaleLowerCase();
-  const keys = await page.locator('[data-participant-id]').evaluateAll((elements, expectedBotName) => {
+  const selector = platform === 'zoom'
+    ? ZOOM_PARTICIPANT_SELECTORS.join(',')
+    : '[data-participant-id]';
+  const keys = await page.locator(selector).evaluateAll((elements, input) => {
+    const { expectedBotName, meetingPlatform } = input as {
+      expectedBotName: string;
+      meetingPlatform: DisclosurePlatform;
+    };
     const normalize = (value: string | null): string => value?.trim().toLocaleLowerCase() ?? '';
     const effectsTile = /visual_effects|backgrounds and effects/i;
-    const selfLabel = /(?:^|[\s,(])you(?:$|[\s,)])/i;
+    const selfLabel = /(?:^|[\s,(])(?:you|me)(?:$|[\s,)])/i;
     const participants = Array.from(elements) as unknown as BrowserParticipantElement[];
     return participants.flatMap((element) => {
       const label = element.getAttribute('aria-label') || (element.textContent || '').trim();
@@ -130,20 +164,23 @@ async function remoteParticipantKeys(page: Page, botName: string): Promise<Set<s
         normalizedLabel.length === 0
         || effectsTile.test(normalizedLabel)
         || normalize(selfName).length > 0
+        || normalizedLabel === 'participants'
         || (expectedBotName.length > 0 && normalizedLabel.includes(expectedBotName))
         || selfLabel.test(label)
       ) {
         return [];
       }
+      if (meetingPlatform === 'zoom') return [normalizedLabel];
       return [element.getAttribute('data-participant-id') || normalizedLabel];
     });
-  }, normalizedBotName).catch(() => [] as string[]);
+  }, { expectedBotName: normalizedBotName, meetingPlatform: platform }).catch(() => [] as string[]);
   return new Set(keys);
 }
 
 async function waitForRemoteParticipant(
   page: Page,
   config: VoltaDisclosureConfig,
+  platform: DisclosurePlatform,
   signal?: AbortSignal,
 ): Promise<Set<string> | null> {
   const deadline = Date.parse(config.participantDeadlineAt);
@@ -152,7 +189,7 @@ async function waitForRemoteParticipant(
   }
   while (Date.now() <= deadline) {
     throwIfAborted(signal);
-    const participants = await remoteParticipantKeys(page, config.botName);
+    const participants = await remoteParticipantKeys(page, config.botName, platform);
     if (participants.size > 0) return participants;
     await page.waitForTimeout(Math.min(PARTICIPANT_POLL_MS, Math.max(1, deadline - Date.now())));
   }
@@ -163,21 +200,29 @@ async function postDisclosure(
   page: Page,
   connectionId: string,
   config: VoltaDisclosureConfig,
+  platform: DisclosurePlatform,
   signal?: AbortSignal,
 ): Promise<void> {
-  let input = await firstVisibleNow(page, CHAT_INPUT_SELECTORS);
+  const buttonSelectors = platform === 'zoom'
+    ? ZOOM_CHAT_BUTTON_SELECTORS
+    : GOOGLE_CHAT_BUTTON_SELECTORS;
+  const inputSelectors = platform === 'zoom'
+    ? ZOOM_CHAT_INPUT_SELECTORS
+    : GOOGLE_CHAT_INPUT_SELECTORS;
+  const platformName = platform === 'zoom' ? 'Zoom' : 'Google Meet';
+  let input = await firstVisibleNow(page, inputSelectors);
   if (input === null) {
-    const button = await firstVisible(page, CHAT_BUTTON_SELECTORS, signal);
-    if (!button) throw new Error('disclosure_failed: Google Meet chat button was not found');
+    const button = await firstVisible(page, buttonSelectors, signal);
+    if (!button) throw new Error(`disclosure_failed: ${platformName} chat button was not found`);
     await button.click({ timeout: STEP_TIMEOUT_MS });
-    input = await firstVisible(page, CHAT_INPUT_SELECTORS, signal);
+    input = await firstVisible(page, inputSelectors, signal);
   }
-  if (!input) throw new Error('disclosure_failed: Google Meet chat input was not found');
+  if (!input) throw new Error(`disclosure_failed: ${platformName} chat input was not found`);
   await input.fill(config.text, { timeout: STEP_TIMEOUT_MS });
   const renderedAt = new Date().toISOString();
   await input.press('Enter', { timeout: STEP_TIMEOUT_MS });
   if (!await verifyRenderedText(page, config.text)) {
-    throw new Error('disclosure_failed: sent text could not be verified in Google Meet chat');
+    throw new Error(`disclosure_failed: sent text could not be verified in ${platformName} chat`);
   }
   throwIfAborted(signal);
   const verifiedAt = new Date().toISOString();
@@ -201,16 +246,26 @@ async function postDisclosure(
   }
 }
 
-export async function discloseInGoogleMeet(
+export async function discloseInMeeting(
+  page: Page,
+  connectionId: string,
+  config: VoltaDisclosureConfig,
+  platform: DisclosurePlatform,
+  signal?: AbortSignal,
+): Promise<DisclosureOutcome> {
+  const participantKeys = await waitForRemoteParticipant(page, config, platform, signal);
+  if (participantKeys === null) return { status: 'no_participant' };
+  await postDisclosure(page, connectionId, config, platform, signal);
+  return { status: 'disclosed', participantKeys };
+}
+
+export function discloseInGoogleMeet(
   page: Page,
   connectionId: string,
   config: VoltaDisclosureConfig,
   signal?: AbortSignal,
 ): Promise<DisclosureOutcome> {
-  const participantKeys = await waitForRemoteParticipant(page, config, signal);
-  if (participantKeys === null) return { status: 'no_participant' };
-  await postDisclosure(page, connectionId, config, signal);
-  return { status: 'disclosed', participantKeys };
+  return discloseInMeeting(page, connectionId, config, 'google_meet', signal);
 }
 
 export type DisclosureMonitorScheduler = (inspect: () => Promise<void>) => () => void;
@@ -221,10 +276,11 @@ const intervalDisclosureMonitor: DisclosureMonitorScheduler = (inspect) => {
   return () => clearInterval(timer);
 };
 
-export function startGoogleMeetDisclosureMonitor(
+export function startDisclosureMonitor(
   page: Page,
   connectionId: string,
   config: VoltaDisclosureConfig,
+  platform: DisclosurePlatform,
   initiallyDisclosedParticipants: ReadonlySet<string>,
   schedule: DisclosureMonitorScheduler = intervalDisclosureMonitor,
 ): () => void {
@@ -234,12 +290,12 @@ export function startGoogleMeetDisclosureMonitor(
   let retryAt = 0;
   const inspect = async (): Promise<void> => {
     if (stopped || posting || page.isClosed() || Date.now() < retryAt) return;
-    const participants = await remoteParticipantKeys(page, config.botName);
+    const participants = await remoteParticipantKeys(page, config.botName, platform);
     const hasUndisclosedParticipant = [...participants].some((key) => !disclosedParticipants.has(key));
     if (!hasUndisclosedParticipant) return;
     posting = true;
     try {
-      await postDisclosure(page, connectionId, config);
+      await postDisclosure(page, connectionId, config, platform);
       for (const key of participants) disclosedParticipants.add(key);
       retryAt = 0;
     } catch (error) {
@@ -254,4 +310,21 @@ export function startGoogleMeetDisclosureMonitor(
     stopped = true;
     cancelScheduledInspection();
   };
+}
+
+export function startGoogleMeetDisclosureMonitor(
+  page: Page,
+  connectionId: string,
+  config: VoltaDisclosureConfig,
+  initiallyDisclosedParticipants: ReadonlySet<string>,
+  schedule: DisclosureMonitorScheduler = intervalDisclosureMonitor,
+): () => void {
+  return startDisclosureMonitor(
+    page,
+    connectionId,
+    config,
+    'google_meet',
+    initiallyDisclosedParticipants,
+    schedule,
+  );
 }
