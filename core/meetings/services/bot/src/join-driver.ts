@@ -16,8 +16,9 @@ import {
 import type { BotStatus } from './contracts.js';
 import type { Invocation } from './config.js';
 import {
-  discloseInGoogleMeet,
-  startGoogleMeetDisclosureMonitor,
+  discloseInMeeting,
+  startDisclosureMonitor as startMeetingDisclosureMonitor,
+  type DisclosurePlatform,
   type VoltaDisclosureConfig,
 } from './disclosure.js';
 import type { DisclosureOutcome, JoinDriver, JoinOutcome, JoinResult } from './ports.js';
@@ -67,6 +68,7 @@ export function createBrowserJoinDriver(
   disclosure?: VoltaDisclosureConfig,
 ): JoinDriver {
   let disclosedParticipantKeys: ReadonlySet<string> | undefined;
+  let disclosurePlatform: DisclosurePlatform | undefined;
   const platform = joinPlatform(inv.platform);
   return {
     async join(report): Promise<JoinResult> {
@@ -100,13 +102,15 @@ export function createBrowserJoinDriver(
       ? {}
       : {
           async disclose(signal?: AbortSignal): Promise<DisclosureOutcome> {
-            if (platform !== 'google_meet') {
-              throw new Error('disclosure_failed: Volta disclosure only supports Google Meet');
+            if (platform !== 'google_meet' && platform !== 'zoom') {
+              throw new Error('disclosure_failed: Volta disclosure supports Google Meet and Zoom');
             }
-            const outcome = await discloseInGoogleMeet(
+            disclosurePlatform = platform;
+            const outcome = await discloseInMeeting(
               page,
               inv.connectionId ?? '',
               disclosure,
+              platform,
               signal,
             );
             if (outcome.status === 'disclosed') {
@@ -115,11 +119,15 @@ export function createBrowserJoinDriver(
             return outcome.status;
           },
           startDisclosureMonitor() {
-            if (disclosedParticipantKeys === undefined) return () => {};
-            return startGoogleMeetDisclosureMonitor(
+            if (
+              disclosedParticipantKeys === undefined
+              || disclosurePlatform === undefined
+            ) return () => {};
+            return startMeetingDisclosureMonitor(
               page,
               inv.connectionId ?? '',
               disclosure,
+              disclosurePlatform,
               disclosedParticipantKeys,
             );
           },

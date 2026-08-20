@@ -1,6 +1,7 @@
 import type { Page } from '@vexa/remote-browser';
 import {
   discloseInGoogleMeet,
+  discloseInMeeting,
   startGoogleMeetDisclosureMonitor,
   type VoltaDisclosureConfig,
 } from './disclosure.js';
@@ -70,12 +71,18 @@ function fakePage(input: {
   };
   return {
     locator(selector: string) {
-      if (selector === '[data-participant-id]') {
+      if (
+        selector === '[data-participant-id]'
+        || selector.includes('.participants-item__display-name')
+      ) {
         return {
-          evaluateAll: async (callback: (elements: ParticipantElement[], name: string) => string[], name: string) => {
+          evaluateAll: async (
+            callback: (elements: ParticipantElement[], payload: unknown) => string[],
+            payload: unknown,
+          ) => {
             const index = Math.min(participantRead, input.participantSets.length - 1);
             participantRead += 1;
-            return callback(input.participantSets[index] ?? [], name);
+            return callback(input.participantSets[index] ?? [], payload);
           },
         };
       }
@@ -137,6 +144,24 @@ await discloseInGoogleMeet(
   config,
 );
 check('does not toggle an already-open chat panel closed', !openChatActions.includes('chat-click'));
+
+const zoomActions: string[] = [];
+const zoomOutcome = await discloseInMeeting(
+  fakePage({
+    participantSets: [[participant('zoom-bot', 'Volta Notetaker (Me)'), alice]],
+    actions: zoomActions,
+  }),
+  'connection-zoom',
+  config,
+  'zoom',
+);
+check('posts verified disclosure in Zoom chat', zoomActions.includes(`fill:${text}`));
+check(
+  'returns Zoom remote participants without the bot',
+  zoomOutcome.status === 'disclosed'
+    && zoomOutcome.participantKeys.has('alice example')
+    && !zoomOutcome.participantKeys.has('volta notetaker (me)'),
+);
 
 let unsentDisclosureRejected = false;
 try {
