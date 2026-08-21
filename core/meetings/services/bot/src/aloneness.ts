@@ -103,10 +103,23 @@ export function resolveAloneSilenceWindowMs(
   }
   return DEFAULT_ALONE_SILENCE_WINDOW_MS;
 }
+export function resolveAloneNotBeforeMs(
+  env: NodeJS.ProcessEnv = process.env,
+  warn: (message: string) => void = (message) => console.warn(`[bot] ${message}`),
+): number | undefined {
+  const raw = env.BOT_ALONE_NOT_BEFORE_AT;
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = Date.parse(raw);
+  if (Number.isFinite(value)) return value;
+  warn(`BOT_ALONE_NOT_BEFORE_AT=${JSON.stringify(raw)} is invalid; allowing the ordinary silence window`);
+  return undefined;
+}
+
 
 export function createSilenceAlonenessSource(options: {
   activity: RemoteAudioActivitySource;
   windowMs: number;
+  notBeforeMs?: number;
   adapters?: readonly AlonenessAdapter[];
   now?: () => number;
   pollMs?: number;
@@ -135,13 +148,14 @@ export function createSilenceAlonenessSource(options: {
       const tick = (): void => {
         if (stopped || fired || adapters.length === 0) return;
         const at = now();
+        if (options.notBeforeMs !== undefined && at < options.notBeforeMs) return;
         const snapshot = options.activity.snapshot();
         for (const adapter of adapters) {
           if (adapter.evaluate(snapshot, at, options.windowMs) !== 'alone') return;
         }
         fired = true;
         stop();
-        log(`aloneness: silence verdict (last_remote_audio_at=${snapshot.lastRemoteAudioAt}, window_ms=${options.windowMs})`);
+        log(`aloneness: silence verdict (last_remote_audio_at=${snapshot.lastRemoteAudioAt}, window_ms=${options.windowMs}, not_before_ms=${options.notBeforeMs ?? 'none'})`);
         callback();
       };
 

@@ -15,7 +15,13 @@ import {
 } from '@vexa/join';
 import type { BotStatus } from './contracts.js';
 import type { Invocation } from './config.js';
-import type { JoinDriver, JoinOutcome, JoinResult } from './ports.js';
+import {
+  discloseInMeeting,
+  startDisclosureMonitor as startMeetingDisclosureMonitor,
+  type DisclosurePlatform,
+  type VoltaDisclosureConfig,
+} from './disclosure.js';
+import type { DisclosureOutcome, JoinDriver, JoinOutcome, JoinResult } from './ports.js';
 
 /**
  * Map @vexa/join's typed AdmissionError `outcome` → a JoinOutcome (G1).
@@ -56,7 +62,13 @@ function joinPlatform(p: string): JoinPlatform {
   return (p === 'teams' || p === 'zoom' || p === 'jitsi') ? p : 'google_meet';
 }
 
-export function createBrowserJoinDriver(page: Page, inv: Invocation): JoinDriver {
+export function createBrowserJoinDriver(
+  page: Page,
+  inv: Invocation,
+  disclosure?: VoltaDisclosureConfig,
+): JoinDriver {
+  let disclosedParticipantKeys: ReadonlySet<string> | undefined;
+  let disclosurePlatform: DisclosurePlatform | undefined;
   const platform = joinPlatform(inv.platform);
   return {
     async join(report): Promise<JoinResult> {
@@ -86,6 +98,40 @@ export function createBrowserJoinDriver(page: Page, inv: Invocation): JoinDriver
       const outcome: JoinOutcome = (r.state === 'blocked' || r.state === 'needs_human_help') ? 'blocked' : 'rejected';
       return { outcome, reason: `join ended in state '${r.state}' without admission` };
     },
+    ...(disclosure === undefined
+      ? {}
+      : {
+          async disclose(signal?: AbortSignal): Promise<DisclosureOutcome> {
+            if (platform !== 'google_meet' && platform !== 'zoom') {
+              throw new Error('disclosure_failed: Volta disclosure supports Google Meet and Zoom');
+            }
+            disclosurePlatform = platform;
+            const outcome = await discloseInMeeting(
+              page,
+              inv.connectionId ?? '',
+              disclosure,
+              platform,
+              signal,
+            );
+            if (outcome.status === 'disclosed') {
+              disclosedParticipantKeys = outcome.participantKeys;
+            }
+            return outcome.status;
+          },
+          startDisclosureMonitor() {
+            if (
+              disclosedParticipantKeys === undefined
+              || disclosurePlatform === undefined
+            ) return () => {};
+            return startMeetingDisclosureMonitor(
+              page,
+              inv.connectionId ?? '',
+              disclosure,
+              disclosurePlatform,
+              disclosedParticipantKeys,
+            );
+          },
+        }),
     onRemoval(cb) {
       if (platform === 'teams') return startTeamsRemovalMonitor(page, cb);
       if (platform === 'zoom')  return startZoomRemovalMonitor(page, cb);

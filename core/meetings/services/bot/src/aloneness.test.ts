@@ -3,6 +3,7 @@ import {
   DEFAULT_ALONE_SILENCE_WINDOW_MS,
   createRemoteAudioActivityTap,
   createSilenceAlonenessSource,
+  resolveAloneNotBeforeMs,
   resolveAloneSilenceWindowMs,
 } from './aloneness.js';
 
@@ -64,6 +65,29 @@ function fixture(windowMs = 1_000) {
   check('exactly-once verdict stops polling', f.scheduler.activeCount === 0);
   stop();
 }
+// Calendar-managed capture must never infer an empty meeting before its scheduled end.
+{
+  const clock = new FakeClock();
+  const scheduler = new FakeScheduler();
+  const activity = createRemoteAudioActivityTap({ now: clock.now });
+  const source = createSilenceAlonenessSource({
+    activity,
+    windowMs: 1_000,
+    notBeforeMs: 5_000,
+    now: clock.now,
+    setInterval: scheduler.setInterval,
+    clearInterval: scheduler.clearInterval,
+    log: () => {},
+  });
+  let fired = 0;
+  activity.ready();
+  source.onAlone(() => fired++);
+  clock.advance(1_000); scheduler.tick();
+  check('scheduled meetings ignore silence before the calendar end', fired === 0);
+  clock.advance(4_000); scheduler.tick();
+  check('elapsed silence can end capture at the calendar boundary', fired === 1);
+}
+
 
 // A qualifying REMOTE frame at W-epsilon resets the full window.
 {
@@ -195,6 +219,13 @@ function fixture(windowMs = 1_000) {
     DEFAULT_ALONE_SILENCE_WINDOW_MS === 600_000);
   check('invalid env falls back to module default',
     resolveAloneSilenceWindowMs(undefined, { BOT_ALONE_SILENCE_WINDOW_MS: 'nope' }, () => {}) === 600_000);
+  check('calendar end parses as the absolute silence floor',
+    resolveAloneNotBeforeMs({ BOT_ALONE_NOT_BEFORE_AT: '2026-08-21T15:00:00.000Z' })
+      === Date.parse('2026-08-21T15:00:00.000Z'));
+  check('missing calendar end keeps ordinary aloneness',
+    resolveAloneNotBeforeMs({}) === undefined);
+  check('invalid calendar end fails open to ordinary aloneness',
+    resolveAloneNotBeforeMs({ BOT_ALONE_NOT_BEFORE_AT: 'invalid' }, () => {}) === undefined);
 }
 
 console.log(failed
