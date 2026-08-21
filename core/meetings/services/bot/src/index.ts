@@ -37,7 +37,7 @@ import { createBotRecordingSink } from './recording.js';
 import { createCaptureSignalRecorder, wrapTranscribeWithTap, type CaptureSignalRecorder } from './telemetry.js';
 import { createSttFaultReporter } from './stt-faults.js';
 import { launchBrowser, startCaptureBridge, startRecording, createSpeakController, type BrowserSession, type SpeakController } from './capture-bridge.js';
-import { createRemoteAudioActivityTap, createSilenceAlonenessSource, resolveAloneSilenceWindowMs } from './aloneness.js';
+import { createRemoteAudioActivityTap, createSilenceAlonenessSource, resolveAloneNotBeforeMs, resolveAloneSilenceWindowMs } from './aloneness.js';
 import { installSignalHandlers } from './signals.js';
 import type {
   JoinDriver,
@@ -244,8 +244,13 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   const speakerStreamConfig = speakerStreamConfigFromEnv(env);
   const remoteAudioActivity = createRemoteAudioActivityTap();
   const aloneSilenceWindowMs = resolveAloneSilenceWindowMs(inv.automaticLeave?.everyoneLeftTimeout, env);
-  const aloneness = createSilenceAlonenessSource({ activity: remoteAudioActivity, windowMs: aloneSilenceWindowMs });
-  console.log(`[bot] aloneness: silence adapter enabled (window_ms=${aloneSilenceWindowMs})`);
+  const aloneNotBeforeMs = resolveAloneNotBeforeMs(env);
+  const aloneness = createSilenceAlonenessSource({
+    activity: remoteAudioActivity,
+    windowMs: aloneSilenceWindowMs,
+    ...(aloneNotBeforeMs === undefined ? {} : { notBeforeMs: aloneNotBeforeMs }),
+  });
+  console.log(`[bot] aloneness: silence adapter enabled (window_ms=${aloneSilenceWindowMs}, not_before_ms=${aloneNotBeforeMs ?? 'none'})`);
   if (speakerStreamConfig) console.log(`[bot] speaker-stream tuning enabled: ${JSON.stringify(speakerStreamConfig)}`);
 
   try {
