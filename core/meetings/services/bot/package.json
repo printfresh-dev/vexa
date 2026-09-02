@@ -23,10 +23,12 @@
     "@vexa/transcribe-whisper": "workspace:*",
     "ajv": "^8.17.0",
     "ajv-formats": "^3.0.1",
-    "redis": "^4.7.0"
+    "redis": "^4.7.0",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/ws": "^8.18.1",
     "@vexa/capture-codec": "workspace:*",
     "esbuild": "^0.25.0",
     "tsx": "^4.19.0",
