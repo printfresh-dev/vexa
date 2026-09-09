@@ -283,17 +283,17 @@ export async function startCaptureBridge(
     const ts = tsMs ?? Date.now();
     observeRemoteAudio(pcm);
     tee(speakerIndex, pcm, ts);                                 // O-TEL-1: tap BEFORE the pipeline
-    voltaAudio?.push(speakerIndex, pcm, ts);
+    voltaAudio?.push(speakerIndex, pcm, ts, mixed ? undefined : null);
     if (mixed) pipeline.feedMixedAudio(pcm, ts);
-    else pipeline.feedAudio(speakerIndex, undefined, pcm, ts); // glow name is bound page-side in the v1 producer; channel index here
+    else pipeline.feedAudio(speakerIndex, undefined, pcm, ts); // the channel stays unidentified until its browser binding is confident
   };
-  // gmeet: the v1 producer stamps the glow name page-side; this named variant carries it through.
+  // gmeet: the browser binder carries per-channel display-name evidence through.
   const onNamedAudio = (channel: number, glowName: string | undefined, samples: number[], tsMs?: number): void => {
     const pcm = new Float32Array(samples);
     const ts = tsMs ?? Date.now();
     observeRemoteAudio(pcm);
     tee(channel, pcm, ts, glowName);                            // O-TEL-1: tap BEFORE the pipeline
-    voltaAudio?.push(channel, pcm, ts);
+    voltaAudio?.push(channel, pcm, ts, glowName ?? null);
     pipeline.feedAudio(channel, glowName, pcm, ts);
   };
   // mixed lane "who is lit" hint (Zoom/Teams active-speaker → the namer's time window).
@@ -417,19 +417,31 @@ export async function startCaptureBridge(
       }
       return;
     }
-    // gmeet lane: per-channel capture + glow attribution (the SAME module the extension runs).
+    // gmeet lane: correlate each remote channel's energy with Meet's active-speaker
+    // signal. A channel stays unnamed until the existing binder has enough evidence.
     if (w.VexaBrowserUtils?.createGmeetCapture && !w.__vexaGmeetCapture) {
+      const channelBinder = w.VexaBrowserUtils.GmeetChannelBinder
+        ? new w.VexaBrowserUtils.GmeetChannelBinder({ selfName: botName })
+        : undefined;
       w.__vexaGmeetSpeakers = w.__vexaGmeetSpeakers
-        ?? w.VexaBrowserUtils.createGmeetSpeakers?.({ log: (m: string) => w.logBot?.('[PerSpeaker] ' + m) });
+        ?? w.VexaBrowserUtils.createGmeetSpeakers?.({
+          selfName: botName,
+          log: (m: string) => w.logBot?.('[PerSpeaker] ' + m),
+          onSpeaking: (name: string, isEnd: boolean) =>
+            channelBinder?.recordGlow(name, isEnd, Date.now()),
+          onSelf: (name: string) => channelBinder?.setSelfName(name),
+        });
       w.__vexaGmeetCapture = w.VexaBrowserUtils.createGmeetCapture({
         log: (m: string) => w.logBot?.('[PerSpeaker] ' + m),
         onAudio: (index: number, pcm: Float32Array) => {
-          w.__vexaGmeetSpeakers?.reportTrackAudio?.(index);
-          // Bind the glow name at capture time (the v1 producer's inversion): exactly-one-lit ⇒ name.
-          const lit: string[] = w.__vexaGmeetSpeakers?.litNames?.() ?? [];
-          const glow = lit.length === 1 ? lit[0] : undefined;
-          if (glow) w.__vexaNamedAudioData(index, glow, Array.from(pcm), Date.now());
-          else w.__vexaPerSpeakerAudioData(index, Array.from(pcm), Date.now());
+          const ts = Date.now();
+          let peak = 0;
+          for (let sample = 0; sample < pcm.length; sample++) {
+            peak = Math.max(peak, Math.abs(pcm[sample] ?? 0));
+          }
+          const speakerName = channelBinder?.nameForChannel(index, ts, peak);
+          if (speakerName) w.__vexaNamedAudioData(index, speakerName, Array.from(pcm), ts);
+          else w.__vexaPerSpeakerAudioData(index, Array.from(pcm), ts);
         },
       });
       await w.__vexaGmeetCapture.start();

@@ -87,5 +87,25 @@ function burst(b: GmeetChannelBinder, ch: number, glow: string[], frames: number
   check('after purge a remote binds normally', b.nameForChannel(0, 4000, 0.0) === 'Anna');
 }
 
+// Concurrent glows without distinguishing evidence must not name a channel.
+{
+  const b = new GmeetChannelBinder();
+  check('equal remote candidates stay UNKNOWN', burst(b, 0, ['Anna', 'Zoya'], 8, 1000) === undefined);
+  check('a weak lead stays UNKNOWN', burst(b, 0, ['Anna'], 1, 1800) === undefined);
+  check('distinct solo evidence resolves the participant', burst(b, 0, ['Anna'], 4, 1900) === 'Anna');
+}
+
+// The same tile cannot be claimed by equally supported audio channels.
+{
+  const b = new GmeetChannelBinder();
+  b.recordGlow('Anna', false, 1000);
+  for (let i = 0; i < 8; i++) {
+    b.nameForChannel(0, 1000 + i * 100, 0.5);
+    b.nameForChannel(1, 1000 + i * 100, 0.5);
+  }
+  check('equally supported channels stay UNKNOWN',
+    b.nameForChannel(0, 1800, 0) === undefined && b.nameForChannel(1, 1800, 0) === undefined);
+}
+
 console.log(failed ? `\n❌ ${failed} failed` : '\n✅ all passed');
 process.exit(failed ? 1 : 0);

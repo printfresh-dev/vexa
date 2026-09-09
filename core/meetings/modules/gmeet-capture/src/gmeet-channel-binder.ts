@@ -24,7 +24,7 @@ export interface GmeetChannelBinderOptions {
   tauMs?: number;
   /** Per-frame energy (peak |sample|) above which a channel counts as actively speaking. Default 0.02. */
   loudThreshold?: number;
-  /** Minimum decayed agreement before a channel binds confidently (else UNKNOWN). Default 2.5. */
+  /** Minimum decayed agreement and lead over competing names/channels (else UNKNOWN). Default 2.5. */
   minScore?: number;
   /**
    * The LOCAL participant's display name (the host / "self"). The self's own audio is
@@ -103,15 +103,22 @@ export class GmeetChannelBinder {
     if (!m) return undefined;
     let best: string | undefined;
     let bestScore = 0;
+    let runnerUpScore = 0;
     for (const name of m.keys()) {
       if (name === this.selfName) continue;                  // the self never wins a remote channel
       const s = this.cur(channel, name, tsMs);
-      if (s > bestScore) { bestScore = s; best = name; }
+      if (s > bestScore) {
+        runnerUpScore = bestScore;
+        bestScore = s;
+        best = name;
+      } else {
+        runnerUpScore = Math.max(runnerUpScore, s);
+      }
     }
-    if (best === undefined || bestScore < this.minScore) return undefined;
+    if (best === undefined || bestScore < this.minScore || bestScore - runnerUpScore < this.minScore) return undefined;
     // 1 tile ↔ 1 channel: only claim `best` if no OTHER channel correlates with it more strongly.
     for (const other of this.agree.keys()) {
-      if (other !== channel && this.cur(other, best, tsMs) > bestScore) return undefined;
+      if (other !== channel && bestScore - this.cur(other, best, tsMs) < this.minScore) return undefined;
     }
     return best;
   }
