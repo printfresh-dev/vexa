@@ -17,6 +17,8 @@ export interface LaunchPersistentOptions {
   args: string[];
   /** Headed by default (Xvfb under VNC); pass true only for headless contexts. */
   headless?: boolean;
+  /** Browser process launch deadline. Playwright default applies when omitted. */
+  timeoutMs?: number;
   /** Pinned UI locale (#856) — sets navigator.language / Accept-Language on the
    *  context. Defaults to BOT_UI_LOCALE (env), else en-US. Keeps the page-level
    *  locale byte-identical to the --lang launch flag the caller passes in args. */
@@ -34,6 +36,7 @@ export async function launchPersistentBrowser(
     args: opts.args,
     viewport: null,
     locale,
+    timeout: opts.timeoutMs,
   });
   const pages = context.pages();
   const page = pages.length > 0 ? pages[0] : await context.newPage();

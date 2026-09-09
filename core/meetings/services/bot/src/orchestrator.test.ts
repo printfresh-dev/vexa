@@ -402,6 +402,45 @@ async function main(): Promise<void> {
       JSON.stringify(seq(events).slice(0, 3)) === JSON.stringify(['joining', 'awaiting_admission', 'active']), JSON.stringify(seq(events)));
   }
 
+  // A consent/challenge gate can surface before the ordinary lobby marker.
+  // The state-machine owner inserts the admission phase and ignores the later
+  // backwards lobby marker instead of widening joining → needs_help.
+  {
+    const lc = recordingSink();
+    const join: JoinDriver = {
+      async join(report) {
+        await report('needs_help');
+        await report('awaiting_admission');
+        await report('active');
+        return 'admitted';
+      },
+      onRemoval() { return () => {}; },
+      async leave() {},
+      async withdraw() {},
+    };
+    let stopRun = async (): Promise<void> => {};
+    const pipeline = {
+      async start() { await stopRun(); },
+      async stop() {},
+    };
+    const o = createOrchestrator(inv(), {
+      lifecycle: lc,
+      join,
+      pipeline,
+      acts: noopActs(),
+      aloneness: noopAloneness(),
+    });
+    stopRun = () => o.handle({ action: 'leave' });
+    await o.run();
+    check(
+      'needs_help: state owner records joining→awaiting_admission→needs_help→active',
+      JSON.stringify(seq(lc.events).slice(0, 4))
+        === JSON.stringify(['joining', 'awaiting_admission', 'needs_help', 'active'])
+      && allLegal(seq(lc.events)),
+      JSON.stringify(seq(lc.events)),
+    );
+  }
+
   // ── Bug 2: stop() at AWAITING_ADMISSION → WITHDRAW the join request (no waiting-room orphan) ──
   // A stop/SIGTERM while the bot is still in the lobby must not merely arm the force-exit watchdog and
   // SIGKILL — that leaves the "asking to join" request live. The orchestrator races the (lobby-blocked)

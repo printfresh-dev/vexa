@@ -9,10 +9,9 @@
  *     AutomationControlled, and MUST NOT be incognito. The session (VNC+CDP)
  *     flags must carry the CDP debug args so an agent can attach.
  *
- *  2. LOGGED-IN DECISION (validate.ts) — validateLoggedIn returns loggedIn=true
- *     IFF (not bounced to a sign-in URL) AND (a known auth cookie is present).
- *     We drive the real function with a stub Playwright Page (url + cookies),
- *     so the AND-matrix is exercised without launching Chromium.
+ *  2. LOGGED-IN DECISION (validate.ts) — a completed auth-gated navigation,
+ *     the platform's expected HTTPS account host, and a live auth cookie must
+ *     all agree. The real function is driven with a stub Playwright Page.
  *
  * Same shape as the mixed/pipeline *.smoke.test.ts (tsx + exit code, no assert lib).
  */
@@ -21,6 +20,7 @@ import {
   getBrowserSessionArgs,
   CDP_DEBUG_ARGS,
 } from './args';
+import type { Page } from 'playwright';
 import { validateLoggedIn, AUTH_COOKIES, AUTH_LOGIN_URLS } from './validate';
 import type { AuthPlatform } from './types';
 
@@ -55,11 +55,11 @@ check(CDP_DEBUG_ARGS.includes('--remote-debugging-port=9222'),
 type Cookie = { name: string; value: string };
 function makePage(finalUrl: string, cookies: Cookie[]) {
   return {
-    async goto(_url: string, _opts?: unknown) { /* no-op */ },
+    async goto(_url: string, _opts?: unknown) { return { ok: () => true }; },
     async waitForTimeout(_ms: number) { /* no-op */ },
     url() { return finalUrl; },
     context() { return { async cookies() { return cookies; } }; },
-  } as any; // structurally satisfies the bits validateLoggedIn touches
+  } as unknown as Page;
 }
 
 async function decisionMatrix() {
@@ -97,7 +97,7 @@ async function main() {
     console.log('❌ FAIL —\n  ' + fails.join('\n  '));
     process.exit(1);
   }
-  console.log('✅ PASS — launch flags safe (no web-security/cert bypass, no incognito, AutomationControlled off, CDP in session mode); validateLoggedIn AND-matrix correct across google {accounturl×cookie}.');
+  console.log('✅ PASS — launch flags safe; validateLoggedIn requires completed navigation, expected account host, and auth cookie.');
   process.exit(0);
 }
 

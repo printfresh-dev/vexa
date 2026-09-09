@@ -27,7 +27,6 @@
 import {
   launchPersistentBrowser,
   syncBrowserDataFromS3,
-  syncBrowserDataToS3,
   cleanStaleLocks,
   getAuthenticatedBrowserArgs,
   makeEphemeralProfileDir,
@@ -43,6 +42,7 @@ import type { BotRecordingSink } from './recording.js';
 import type { TelemetrySink } from './ports.js';
 import type { RemoteAudioActivityTap } from './aloneness.js';
 import { createTtsPlayback } from './tts-playback.js';
+import { openVoltaAudioStreamFromEnvironment } from './volta-audio-stream.js';
 
 /** Float32 PCM → base64 of its little-endian bytes — the EXACT codec wire payload, so a stored
  *  captured-signal.v1 frame round-trips through @vexa/capture-codec (encode→decode→same PCM). */
@@ -233,18 +233,9 @@ export async function launchBrowser(inv: Invocation): Promise<BrowserSession> {
     page,
     async close() {
       await context.close().catch(() => { /* best-effort */ });
-      // Write-back on clean teardown (#725): Google rotates session cookies during use, so the
-      // durable copy is refreshed from the LIVE profile dir after the context flushes — the next
-      // spawn restores the freshest state instead of a decaying snapshot. Clean teardown only:
-      // a SIGKILL never reaches close(), so a hard-killed meeting keeps the last durable copy.
-      // Failures are attributed warnings, bounded per upload — teardown never hangs on S3.
-      if (inv.authenticated && inv.userdataS3Path) {
-        try {
-          syncBrowserDataToS3(s3Config, dataDir);
-        } catch (e) {
-          console.error(`[bot] session write-back failed (durable copy stays at last restore): ${String(e)}`);
-        }
-      }
+      // A meeting runs on a disposable snapshot. Only confirmed provisioning or
+      // reauthentication may update the durable profile; meeting teardown must
+      // not overwrite a newer session with this meeting's stale snapshot.
       removeProfileDir(dataDir);   // per-bot dir — leaking one per bot fills the disk in vexa-lite
     },
   };
@@ -281,6 +272,7 @@ export async function startCaptureBridge(
   // check), so the proven O6 capture path is byte-for-byte unchanged. captureFrame is fire-and-forget.
   const tee = makeTelemetryTap(lane, telemetry);
   const observeRemoteAudio = makeRemoteAudioEnergyTap(activity);
+  const voltaAudio = await openVoltaAudioStreamFromEnvironment();
 
   // ── Node-side frame sink: one capture.v1 frame crossing the Playwright boundary. ──
   // The page serializes PCM as a plain number[] (Array.from(Float32Array)); we restore the
@@ -291,6 +283,7 @@ export async function startCaptureBridge(
     const ts = tsMs ?? Date.now();
     observeRemoteAudio(pcm);
     tee(speakerIndex, pcm, ts);                                 // O-TEL-1: tap BEFORE the pipeline
+    voltaAudio?.push(speakerIndex, pcm, ts);
     if (mixed) pipeline.feedMixedAudio(pcm, ts);
     else pipeline.feedAudio(speakerIndex, undefined, pcm, ts); // glow name is bound page-side in the v1 producer; channel index here
   };
@@ -300,6 +293,7 @@ export async function startCaptureBridge(
     const ts = tsMs ?? Date.now();
     observeRemoteAudio(pcm);
     tee(channel, pcm, ts, glowName);                            // O-TEL-1: tap BEFORE the pipeline
+    voltaAudio?.push(channel, pcm, ts);
     pipeline.feedAudio(channel, glowName, pcm, ts);
   };
   // mixed lane "who is lit" hint (Zoom/Teams active-speaker → the namer's time window).
@@ -461,6 +455,7 @@ export async function startCaptureBridge(
       try { w.__vexaMixCtx?.close?.(); } catch { /* best-effort */ }
       try { w.__vexaGmeetSpeakers?.destroy?.(); } catch { /* best-effort */ }
     }).catch(() => { /* page already gone */ });
+    await voltaAudio?.finish();
   };
 }
 

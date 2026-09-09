@@ -24,6 +24,21 @@ export class AuthSessionError extends AdmissionError {
     this.name = "AuthSessionError";
   }
 }
+export function isGoogleMeetOrigin(value: string): boolean {
+  try {
+    return new URL(value).origin === "https://meet.google.com";
+  } catch {
+    return false;
+  }
+}
+
+function requireAuthenticatedGoogleMeetOrigin(page: Page): void {
+  if (!isGoogleMeetOrigin(page.url())) {
+    throw new AuthSessionError(
+      "Authenticated Google Meet navigation left the trusted meeting origin. Re-authenticate the profile and retry."
+    );
+  }
+}
 
 /**
  * Signed-out guard probe (authenticated mode): a guest lobby renders a name
@@ -151,9 +166,11 @@ async function scanLobbyPrimaryCta(
  */
 async function firstVisibleSelector(
   page: Page,
-  selectors: string[]
+  selectors: string[],
+  beforeSelector?: () => void | Promise<void>,
 ): Promise<{ handle: ElementHandle<Element>; selector: string } | null> {
   for (const sel of selectors) {
+    await beforeSelector?.();
     try {
       const loc = page.locator(sel).first();
       if (!(await loc.isVisible())) continue;
@@ -170,16 +187,18 @@ async function firstVisibleSelector(
  * that saw the lobby are long gone by the time anyone reads it (#846 A4).
  */
 async function observedPageContext(page: Page): Promise<string> {
-  let url = "?";
-  try { url = page.url(); } catch { /* best-effort */ }
+  let origin = "?";
   try {
-    const ctx: any = await page.evaluate(() => ({
+    origin = new URL(page.url()).origin;
+  } catch { /* best-effort */ }
+  try {
+    const ctx = await page.evaluate(() => ({
       lang: document.documentElement.getAttribute("lang") || "",
       nav: navigator.language || "",
     }));
-    return `url=${url} html.lang=${ctx.lang || "?"} navigator.language=${ctx.nav || "?"}`;
+    return `origin=${origin} html.lang=${ctx.lang || "?"} navigator.language=${ctx.nav || "?"}`;
   } catch {
-    return `url=${url} html.lang=? navigator.language=?`;
+    return `origin=${origin} html.lang=? navigator.language=?`;
   }
 }
 
@@ -256,7 +275,8 @@ export async function waitForLobbyCta(
   page: Page,
   selectors: string[],
   timeoutMs: number,
-  label: string
+  label: string,
+  beforePoll?: () => void | Promise<void>,
 ): Promise<{ handle: ElementHandle<Element>; selector: string }> {
   const started = Date.now();
   const graceMs = Math.min(CTA_SCAN_GRACE_MS, Math.floor(timeoutMs / 3));
@@ -265,12 +285,15 @@ export async function waitForLobbyCta(
   // no text-labelled button", never "the scan never got to look".
   let lastLabels: string[] | null = null;
   do {
-    const hit = await firstVisibleSelector(page, selectors);
+    await beforePoll?.();
+    const hit = await firstVisibleSelector(page, selectors, beforePoll);
+    await beforePoll?.();
     if (hit) {
       log(`Located ${label} via selector: ${hit.selector}`);
       return hit;
     }
     if (Date.now() - started >= graceMs && polls % CTA_SCAN_EVERY_POLLS === 0) {
+      await beforePoll?.();
       const scan = await scanLobbyPrimaryCta(page);
       lastLabels = scan.labels;
       // Diagnostic-only: the scan is NOT allowed to resolve the CTA. If it would
@@ -286,6 +309,7 @@ export async function waitForLobbyCta(
     polls++;
     await page.waitForTimeout(SELECTOR_POLL_MS);
   } while (Date.now() - started < timeoutMs);
+  await beforePoll?.();
 
   throw new Error(await describeSelectorMiss(page, selectors, timeoutMs, label, lastLabels));
 }
@@ -318,6 +342,7 @@ export async function joinGoogleMeeting(
 ): Promise<void> {
   const navUrl = withPinnedMeetLocale(meetingUrl, resolveBotUiLocale());
   await page.goto(navUrl, { waitUntil: "domcontentloaded" });
+  if (botConfig.authenticated) requireAuthenticatedGoogleMeetOrigin(page);
   await page.bringToFront();
 
   // Take screenshot after navigation
@@ -415,20 +440,6 @@ export async function joinGoogleMeeting(
       log("Camera already off or not found.");
     }
 
-    // Authenticated lobby: one primary CTA — "Join now" (standard join),
-    // "Switch here" (same account already in the call) or "Ask to join"
-    // (host approval required) — or any localized equivalent. The CTA is
-    // located by the ordered selector list (googleAuthJoinCtaSelectors, exact
-    // text first now the UI locale is pinned — #856). The structural scan runs
-    // diagnostic-only and never clicks; waitForLobbyCta fails LOUD (screenshot +
-    // selector list + observed locale) if no CTA appears.
-    const { handle: ctaHandle, selector: ctaSelector } = await waitForLobbyCta(
-      page,
-      googleAuthJoinCtaSelectors,
-      30000,
-      "authenticated join CTA"
-    );
-
     // Signed-out guard: a guest lobby (name input rendered) means the persisted
     // browser profile is signed out — fail closed with a typed error instead of
     // silently joining as an anonymous guest. The probe is structural, so the
@@ -441,7 +452,31 @@ export async function joinGoogleMeeting(
         "Browser profile signed out — cannot authenticate with Google. Re-authenticate the profile and retry."
       );
     }
+    // Authenticated lobby: one primary CTA — "Join now" (standard join),
+    // "Switch here" (same account already in the call) or "Ask to join"
+    // (host approval required) — or any localized equivalent. The CTA is
+    // located by the ordered selector list (googleAuthJoinCtaSelectors, exact
+    // text first now the UI locale is pinned — #856). The structural scan runs
+    // diagnostic-only and never clicks; waitForLobbyCta fails LOUD (screenshot +
+    // selector list + observed locale) if no CTA appears.
+    const { handle: ctaHandle, selector: ctaSelector } = await waitForLobbyCta(
+      page,
+      googleAuthJoinCtaSelectors,
+      30000,
+      "authenticated join CTA",
+      () => requireAuthenticatedGoogleMeetOrigin(page),
+    );
+    requireAuthenticatedGoogleMeetOrigin(page);
+    // The guest name field can render after the CTA. Recheck at the final
+    // decision boundary so a late signed-out lobby can never reuse that CTA.
+    if (await isGoogleSignedOutLobby(page)) {
+      try { await ctaHandle.dispose(); } catch { /* best-effort */ }
+      throw new AuthSessionError(
+        "Browser profile signed out — cannot authenticate with Google. Re-authenticate the profile and retry."
+      );
+    }
 
+    requireAuthenticatedGoogleMeetOrigin(page);
     await clickHandle(ctaHandle, "authenticated_join");
     log(`Bot clicked the authenticated join CTA (via ${ctaSelector}).`);
 

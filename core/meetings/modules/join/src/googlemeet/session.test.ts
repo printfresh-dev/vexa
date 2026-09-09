@@ -20,7 +20,7 @@
  * Run: npx tsx src/googlemeet/session.test.ts
  */
 
-import { joinGoogleMeeting, isGoogleSignedOutLobby, AuthSessionError } from './join';
+import { joinGoogleMeeting, isGoogleMeetOrigin, isGoogleSignedOutLobby, AuthSessionError } from './join';
 import { googleAuthJoinCtaSelectors, googleSignedOutLobbyProbeSelectors } from './selectors';
 
 // Structural (locale-agnostic) vs English-literal selector split, derived from
@@ -37,7 +37,11 @@ const PROBE_ENGLISH = googleSignedOutLobbyProbeSelectors.filter(isEnglishLiteral
  * that resolve on this page; every click on a resolved handle is recorded in
  * `clicks` (keyed by the selector that produced the handle).
  */
-function mockPage(visible: string[]) {
+function mockPage(
+  visible: string[],
+  currentUrl = 'https://meet.google.com/abc-defg-hij',
+  afterCtaResolved?: () => void,
+) {
   const clicks: string[] = [];
   const handle = (sel: string) => ({
     click: async () => { clicks.push(sel); },
@@ -51,7 +55,7 @@ function mockPage(visible: string[]) {
     waitForTimeout: async () => {},
     fill: async () => {},
     mouse: { move: async () => {} },
-    url: () => 'https://meet.google.com/abc-defg-hij',
+    url: () => currentUrl,
     // The lobby-CTA resolvers read the observed locale for the failure
     // diagnostic and run the structural scan through evaluateHandle; neither
     // resolves anything on this fixture, which is driven purely by `visible`.
@@ -71,7 +75,11 @@ function mockPage(visible: string[]) {
     locator: (sel: string) => ({
       first: () => ({
         isVisible: async () => visible.includes(sel),
-        elementHandle: async () => (visible.includes(sel) ? handle(sel) : null),
+        elementHandle: async () => {
+          if (!visible.includes(sel)) return null;
+          if (googleAuthJoinCtaSelectors.includes(sel)) afterCtaResolved?.();
+          return handle(sel);
+        },
       }),
     }),
   };
@@ -114,6 +122,43 @@ function check(name: string, ok: boolean, detail = '') {
     const err = await join(page).then(() => null, (e: unknown) => e);
     check('signed-in, not pre-admitted → join proceeds (no error)', err === null, String(err));
     check('…and the CTA was clicked exactly once', page.clicks.length === 1, `clicks: ${page.clicks}`);
+  }
+  // The guest name input may arrive only after the broad CTA is resolved.
+  {
+    const visible = [...CTA_STRUCTURAL];
+    const page = mockPage(
+      visible,
+      'https://meet.google.com/abc-defg-hij',
+      () => visible.push(...PROBE_STRUCTURAL),
+    );
+    const err = await join(page).then(() => null, (e: unknown) => e);
+    check(
+      'late-rendered guest lobby → AuthSessionError before CTA click',
+      err instanceof AuthSessionError
+        && err.outcome === 'auth_session_missing'
+        && page.clicks.length === 0,
+    );
+  }
+
+
+  // 3. Authenticated navigation bounced to Google sign-in: refuse at the
+  // origin boundary before the broad jsname CTA can resolve or click.
+  {
+    const page = mockPage(
+      CTA_STRUCTURAL,
+      'https://accounts.google.com/v3/signin/confirmidentifier?continue=private',
+    );
+    const err = await join(page).then(() => null, (e: unknown) => e);
+    check(
+      'sign-in redirect → AuthSessionError("auth_session_missing")',
+      err instanceof AuthSessionError && err.outcome === 'auth_session_missing',
+    );
+    check('…and broad CTA was never clicked', page.clicks.length === 0, `clicks: ${page.clicks}`);
+    check('origin guard requires exact HTTPS Meet origin',
+      isGoogleMeetOrigin('https://meet.google.com/abc-defg-hij')
+      && !isGoogleMeetOrigin('http://meet.google.com/abc-defg-hij')
+      && !isGoogleMeetOrigin('https://meet.google.com:444/abc-defg-hij')
+      && !isGoogleMeetOrigin('https://meet.google.com.example.invalid/abc-defg-hij'));
   }
 
   console.log('\n=== #757 — detection is structural: non-English lobby fixtures ===');

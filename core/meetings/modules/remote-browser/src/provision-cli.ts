@@ -23,6 +23,7 @@
  */
 import { provisionLogin } from './login';
 import { BROWSER_DATA_DIR, syncBrowserDataToS3, type S3Config } from './session-store';
+import { readGoogleCredentials } from './reauth-cli';
 import type { AuthPlatform } from './types';
 
 const PLATFORMS: AuthPlatform[] = ['google', 'zoom', 'teams'];
@@ -36,6 +37,9 @@ async function main(): Promise<number> {
   const platform = raw as AuthPlatform;
   const profileDir = process.env.LOGIN_PROFILE_DIR || BROWSER_DATA_DIR;
   const timeoutMs = Number(process.env.LOGIN_TIMEOUT_MS) > 0 ? Number(process.env.LOGIN_TIMEOUT_MS) : 600_000;
+  const expectedGoogleEmail = platform === 'google' && process.env.BOT_GOOGLE_CREDENTIALS_FILE
+    ? readGoogleCredentials(process.env.BOT_GOOGLE_CREDENTIALS_FILE).email
+    : undefined;
 
   const s3: S3Config = {
     userdataS3Path: process.env.BOT_USERDATA_S3_PATH || undefined,
@@ -51,7 +55,12 @@ async function main(): Promise<number> {
 
   // The login gate: only a validateLoggedIn-confirmed session proceeds. An aborted /
   // timed-out sign-in exits non-zero with the login verdict and touches NOTHING durable.
-  const status = await provisionLogin({ platform, profileDir, timeoutMs, keepOpenMs: 2000 });
+  const status = await provisionLogin({
+    platform,
+    profileDir,
+    timeoutMs,
+    expectedGoogleEmail,
+  });
   if (!status.loggedIn) {
     console.error(`[provision-login] FAILED — login not confirmed: ${status.detail}`);
     return 1;
@@ -74,7 +83,7 @@ async function main(): Promise<number> {
   return 0;
 }
 
-main().then((code) => process.exit(code)).catch((e) => {
-  console.error(`[provision-login] FAILED — ${String(e)}`);
+main().then((code) => process.exit(code)).catch(() => {
+  console.error('[provision-login] FAILED — unexpected provisioning error');
   process.exit(1);
 });

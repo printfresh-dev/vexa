@@ -7,16 +7,24 @@ Login Data) is saved and retrievable — so the join layer can be handed an alre
 (`BotConfig.authenticated`). Carved from `vexa-bot/core/src/{s3-sync,browser-session,constans}.ts`; the
 bot now imports these instead of re-declaring them (one-way rule: services import bricks).
 
-Two flows:
+Three flows:
 
-1. `provisionLogin()` — start browser + VNC → a human signs in → persist the session. Detects login by
-   the page **leaving** the sign-in/OAuth pages (a reliable, non-disruptive signal), then confirms with
-   `validateLoggedIn`.
+1. `provisionLogin()` — start browser + VNC → a human signs in → confirm the
+   protected Google identity when configured, then persist.
 2. `launchPersistentBrowser({ dataDir })` + `validateLoggedIn()` — restore + confirm.
+3. `node dist/reauth-cli.js [--check-only]` — restore an ephemeral Google profile,
+   verify the protected credential file's account identity, perform at most one
+   password/TOTP sign-in when permitted, and persist only a confirmed matching account.
+   The `0600` regular file at `BOT_GOOGLE_CREDENTIALS_FILE` is JSON
+   `{email,password,totpSecret?}`. S3 configuration uses the existing `BOT_*`
+   variables or the `VOLTA_VEXA_*` aliases. Standard output contains one result
+   JSON line; operational output is written to standard error.
 
-Backends: S3 (`syncBrowserData{To,From}S3` — production, shells the `aws` CLI) or local
-(`saveSessionLocal` / `loadSessionLocal`). Only the **auth-essential** subset of a Chromium profile is
-persisted (~200 KB), not the full profile.
+Backends: S3 (`syncBrowserData{To,From}S3`) or local (`saveSessionLocal` /
+`loadSessionLocal`). Durable S3 writes belong only to confirmed provisioning and
+reauthentication; meeting profiles are disposable read-only snapshots, so an older
+meeting cannot overwrite newer credentials. Only the auth-essential profile subset is
+persisted.
 
 > Launch flags are deliberately restrained: NO `--disable-web-security` / `--ignore-certificate-errors`
 > (Google's bot layer flags those → "You can't join this video call"), AutomationControlled disabled,
@@ -24,18 +32,13 @@ persisted (~200 KB), not the full profile.
 > additionally carries the CDP debug args so an agent can attach over the gateway proxy.
 
 ## Surface
-`provisionLogin` · `launchPersistentBrowser` · `validateLoggedIn` · `getAuthenticatedBrowserArgs` ·
-`getBrowserSessionArgs` · `CDP_DEBUG_ARGS` · session store (`syncBrowserDataFromS3`/`…ToS3`,
-`saveSessionLocal`/`loadSessionLocal`, `cleanStaleLocks`, `ensureBrowserDataDir`, `BROWSER_DATA_DIR`) ·
-`AUTH_LOGIN_URLS` · `AUTH_COOKIES` (+ types `AuthPlatform`, `LoginStatus`, `S3Config`,
-`LaunchPersistentOptions`, `ProvisionLoginOptions`). Front door: [`src/index.ts`](src/index.ts).
+`provisionLogin` · `attemptGoogleLogin` · `generateTotp` · `launchPersistentBrowser` ·
+`validateLoggedIn` · browser args · session store. The built CLI is exported as
+`@vexa/remote-browser/reauth-cli` and emitted at `dist/reauth-cli.js`.
 
 ## Verify
-`pnpm --filter @vexa/remote-browser run build` — `tsc` clean (self-contained CommonJS `tsconfig`:
-extensionless relative imports + value-imports of `./types`, so it does NOT extend the ESM
-`tsconfig.base`). [`src/auth.smoke.test.ts`](src/auth.smoke.test.ts)
-(`pnpm --filter @vexa/remote-browser test`) pins the two contract-level invariants in isolation (no real
-browser, no network): the launch-flag safety set, and the `validateLoggedIn` AND-matrix (loggedIn IFF
-not bounced to a sign-in URL AND a known auth cookie is present) driven through a stub Playwright `Page`.
-The real login / persistence / restore paths need an **integration env** (a headed Chromium + VNC, and
-S3 creds for the S3 backend). Covered by `gate:node`, `gate:isolation`, `gate:exports`, `gate:readme`.
+Build with `pnpm --filter @vexa/remote-browser run build`. Run the offline
+regressions with `pnpm --filter @vexa/remote-browser test`
+(`auth.smoke.test.ts`, `reauth.test.ts`, and `session-store.test.ts`). A real
+Google sign-in still requires headed Chromium, the protected credential file,
+and live S3 credentials.

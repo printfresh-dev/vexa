@@ -223,13 +223,18 @@ export function createOrchestrator(inv: Invocation, deps: OrchestratorDeps) {
     }
 
     // ── join → admission ──
-    // Serialize the driver's intermediate reports so lifecycle.v1 events POST in order even
-    // when the driver fire-and-forgets, and SURFACE a contract-illegal transition (log) rather
-    // than silently dropping it.
+    // Serialize driver reports and preserve the lifecycle contract. A help signal
+    // is an admission-phase state even when a page exposes the gate before its
+    // ordinary lobby marker, so the machine records awaiting_admission first.
+    // A later lobby marker does not move needs_help backwards.
     let reportChain: Promise<void> = Promise.resolve();
     const report = (s: BotStatus): Promise<void> => {
-      reportChain = reportChain.then(() => emit(s)).catch((e) => {
-        console.error(`[bot] lifecycle report '${s}' rejected: ${String(e)}`);
+      reportChain = reportChain.then(async () => {
+        if (cur === 'joining' && s === 'needs_help') await emit('awaiting_admission');
+        if (cur === 'needs_help' && s === 'awaiting_admission') return;
+        await emit(s);
+      }).catch(() => {
+        console.error(`[bot] lifecycle report rejected for state '${s}'`);
       });
       return reportChain;
     };

@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./reauth-cli": {
+      "types": "./dist/reauth-cli.d.ts",
+      "default": "./dist/reauth-cli.js"
     }
   },
   "files": [
@@ -16,9 +20,10 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsx src/auth.smoke.test.ts && tsx src/session-store.test.ts",
+    "test": "tsx src/auth.smoke.test.ts && tsx src/reauth.test.ts && tsx src/session-store.test.ts",
     "check:isolation": "node scripts/check-isolation.js",
-    "login": "tsx src/provision-cli.ts"
+    "login": "tsx src/provision-cli.ts",
+    "reauth": "node dist/reauth-cli.js"
   },
   "dependencies": {
     "playwright": "1.56.0",
