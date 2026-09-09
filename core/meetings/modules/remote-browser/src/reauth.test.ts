@@ -40,7 +40,8 @@ function loginPage(mode: LoginMode): { page: Page; fills: Array<{ field: string;
     selector: string,
   ): 'email' | 'password' | 'totp' | 'invalid' | 'captcha' | 'other' => {
     if (selector.includes('aria-invalid')) return 'invalid';
-    if (selector.includes('identifier') || selector === 'input[type="email"]') return 'email';
+    // Google's identifier field is type="text", not type="email".
+    if (selector.includes('identifier') && !selector.includes('[type="email"]')) return 'email';
     if (selector.includes('Passwd') || selector === 'input[type="password"]') return 'password';
     if (selector.includes('totpPin')) return 'totp';
     if (/captcha|recaptcha|name="ca"/.test(selector)) return 'captcha';
