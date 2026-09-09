@@ -26,7 +26,7 @@ const GOOGLE_IDENTIFIER_URL =
 const POLL_MS = 250;
 const POLLS_PER_STAGE = 32;
 
-const EMAIL_INPUTS = ['input[name="identifier"][type="email"]', 'input[type="email"]'];
+const EMAIL_INPUTS = ['input[name="identifier"]', 'input[type="email"]'];
 const PASSWORD_INPUTS = ['input[name="Passwd"][type="password"]', 'input[type="password"]'];
 const TOTP_INPUTS = ['input[name="totpPin"]'];
 const INVALID_INPUTS = [
