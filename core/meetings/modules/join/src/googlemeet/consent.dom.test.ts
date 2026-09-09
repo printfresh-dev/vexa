@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict';
+import { strict as assert } from 'assert';
 import { chromium } from 'playwright';
 import { checkForGoogleAdmissionIndicators, hasConsentPrompt } from './admission';
 
