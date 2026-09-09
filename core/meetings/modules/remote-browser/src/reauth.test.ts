@@ -284,7 +284,7 @@ async function main(): Promise<void> {
       && checkOnly.result.reasonCode === 'auth_session_missing'
       && loginAttempts === 0
       && persisted === 0,
-    '--check-only must validate without entering credentials or persisting a profile',
+    'a signed-out check must not enter credentials or overwrite a durable profile',
   );
   const failedConfirmation = await runGoogleReauthentication({
     credentialsFile: credentialFile,
@@ -294,6 +294,19 @@ async function main(): Promise<void> {
   check(failedConfirmation.result.state === 'action_required' && persisted === 0,
     'a login whose expected account cannot be confirmed must not overwrite durable state');
   check(closed === 2 && removed === 2, 'each authentication attempt must close and delete its ephemeral profile');
+  const refreshNotDurable = await runGoogleReauthentication({
+    credentialsFile: credentialFile,
+    checkOnly: true,
+    s3: presentS3,
+  }, {
+    ...dependencies,
+    validate: async () => ({ loggedIn: true, reason: 'authenticated', detail: 'expected account confirmed' }),
+    persist: () => 0,
+    login: async () => { throw new Error('A valid session must not enter credentials'); },
+  });
+  check(refreshNotDurable.result.state === 'action_required'
+    && refreshNotDurable.result.reasonCode === 'auth_check_failed',
+  'a refreshed session that cannot be saved must not report durable authentication health');
   rmSync(work, { recursive: true, force: true });
 
   if (failures.length) {

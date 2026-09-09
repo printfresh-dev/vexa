@@ -158,17 +158,18 @@ export async function runGoogleReauthentication(
     browser = await dependencies.launch(profileDir);
 
     const restored = await dependencies.validate(browser.page, credentials.email);
-    if (restored.loggedIn) return authenticated();
-    if (options.checkOnly) return validationFailure(restored);
-    if (restored.reason === 'check_failed') return actionRequired('auth_check_failed', true);
+    if (!restored.loggedIn) {
+      if (options.checkOnly) return validationFailure(restored);
+      if (restored.reason === 'check_failed') return actionRequired('auth_check_failed', true);
 
-    const login = await dependencies.login(browser.page, credentials);
-    if (!login.authenticated) {
-      return actionRequired(login.reasonCode, login.reasonCode === 'auth_check_failed');
+      const login = await dependencies.login(browser.page, credentials);
+      if (!login.authenticated) {
+        return actionRequired(login.reasonCode, login.reasonCode === 'auth_check_failed');
+      }
+
+      const confirmed = await dependencies.validate(browser.page, credentials.email);
+      if (!confirmed.loggedIn) return validationFailure(confirmed);
     }
-
-    const confirmed = await dependencies.validate(browser.page, credentials.email);
-    if (!confirmed.loggedIn) return validationFailure(confirmed);
 
     const context = browser.context;
     browser = undefined;
