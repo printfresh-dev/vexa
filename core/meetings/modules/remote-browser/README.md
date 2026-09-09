@@ -15,6 +15,8 @@ Three flows:
 3. `node dist/reauth-cli.js [--check-only]` — restore an ephemeral Google profile,
    verify the protected credential file's account identity, perform at most one
    password/TOTP sign-in when permitted, and persist only a confirmed matching account.
+   Successful checks also persist refreshed session cookies after browser close;
+   `--check-only` forbids password entry, not renewal of a validated session.
    The `0600` regular file at `BOT_GOOGLE_CREDENTIALS_FILE` is JSON
    `{email,password,totpSecret?}`. S3 configuration uses the existing `BOT_*`
    variables or the `VOLTA_VEXA_*` aliases. Standard output contains one result
