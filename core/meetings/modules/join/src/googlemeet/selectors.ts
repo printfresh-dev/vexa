@@ -75,12 +75,11 @@ export const googleConsentPromptIndicators: string[] = [
   '[role="dialog"]:has-text("take notes for me")',
   '[role="alertdialog"]:has-text("take notes for me")',
   'button:has-text("take notes for me")',
-  // "taking notes" is dialog-scoped ON PURPOSE: a bare substring would also
-  // match the persistent "Gemini is taking notes" in-call pill shown when
-  // notes are ALREADY running — that state must not read as a pending consent
-  // gate (it would suppress admission for the entire call).
-  '[role="dialog"]:has-text("taking notes")',
-  '[role="alertdialog"]:has-text("taking notes")',
+  // Active-note status popovers also use role=dialog. Their Stop control proves
+  // notes are already running, not awaiting consent. Exclude those containers
+  // before selecting the first match so a separate consent dialog still blocks.
+  '[role="dialog"]:has-text("taking notes"):not(:has(button:has-text("Stop taking notes"), [role="button"]:has-text("Stop taking notes")))',
+  '[role="alertdialog"]:has-text("taking notes"):not(:has(button:has-text("Stop taking notes"), [role="button"]:has-text("Stop taking notes")))',
 ];
 
 export const googleRejectionIndicators: string[] = [
