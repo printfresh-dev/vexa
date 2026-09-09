@@ -2,7 +2,8 @@ import WebSocket from 'ws';
 
 const SAMPLE_RATE = 16_000;
 const MIX_DELAY_MS = 200;
-const MAX_PCM_SAMPLES = 24_000;
+const FLUSH_INTERVAL_MS = 50;
+const MAX_PCM_SAMPLES = SAMPLE_RATE / 10;
 const MAX_TIMESTAMP_SKEW_MS = 10 * 60 * 1_000;
 
 function deferred<T>(): {
@@ -20,33 +21,39 @@ function deferred<T>(): {
 }
 
 export interface VoltaAudioStream {
-  push(speakerIndex: number, pcm: Float32Array, capturedAtMs: number): void;
+  push(speakerIndex: number, pcm: Float32Array, capturedAtMs: number, speakerName?: string | null): void;
   finish(): Promise<void>;
 }
 
 class LiveVoltaAudioStream implements VoltaAudioStream {
-  private originMs: number | undefined;
+  private readonly originMs = Date.now();
+  private readonly startedAt = performance.now();
+  private readonly flushTimer: ReturnType<typeof setInterval>;
   private samples = new Float32Array(SAMPLE_RATE);
   private emittedSamples = 0;
   private highestSample = 0;
-  private highestTimestampMs = 0;
   private failure: Error | undefined;
   private finished = false;
   constructor(private readonly socket: WebSocket) {
+    this.flushTimer = setInterval(() => {
+      const elapsedMs = performance.now() - this.startedAt - MIX_DELAY_MS;
+      const through = Math.max(this.emittedSamples, Math.floor(elapsedMs * SAMPLE_RATE / 1_000));
+      this.flushThrough(Math.min(through, this.emittedSamples + MAX_PCM_SAMPLES));
+    }, FLUSH_INTERVAL_MS);
+    this.flushTimer.unref();
     socket.on('error', (error) => { this.failure ??= error; });
     socket.on('close', () => {
+      clearInterval(this.flushTimer);
       if (!this.finished) this.failure ??= new Error('Volta audio stream closed during capture');
     });
   }
 
-  push(_speakerIndex: number, pcm: Float32Array, capturedAtMs: number): void {
+  push(speakerIndex: number, pcm: Float32Array, capturedAtMs: number, speakerName?: string | null): void {
     if (this.finished || pcm.length === 0) return;
     const now = Date.now();
     const timestamp = Number.isFinite(capturedAtMs) && Math.abs(capturedAtMs - now) <= MAX_TIMESTAMP_SKEW_MS
       ? capturedAtMs
       : now;
-    this.originMs ??= timestamp;
-    this.highestTimestampMs = Math.max(this.highestTimestampMs, timestamp);
     let sourceOffset = 0;
     let start = Math.round((timestamp - this.originMs) * SAMPLE_RATE / 1_000);
     if (start < this.emittedSamples) {
@@ -54,22 +61,42 @@ class LiveVoltaAudioStream implements VoltaAudioStream {
       start += sourceOffset;
     }
     const end = start + pcm.length - sourceOffset;
+    if (
+      speakerName !== undefined
+      && end > start
+      && Number.isInteger(speakerIndex)
+      && speakerIndex >= 0
+      && speakerIndex <= 4_096
+    ) {
+      const trimmedName = speakerName?.trim();
+      this.socket.send(JSON.stringify({
+        type: 'speaker_observation',
+        evidence: 'google_meet_active_speaker',
+        source_channel: speakerIndex,
+        start_sample_offset: start,
+        end_sample_offset: end,
+        display_name: trimmedName && trimmedName.length <= 128 ? trimmedName : null,
+      }));
+    }
     this.ensureCapacity(end - this.emittedSamples);
     for (let source = sourceOffset, target = start - this.emittedSamples; source < pcm.length; source++, target++) {
       this.samples[target] = Math.max(-1, Math.min(1, this.samples[target]! + pcm[source]!));
     }
     this.highestSample = Math.max(this.highestSample, end);
-    const safeThrough = Math.max(
-      this.emittedSamples,
-      Math.round((this.highestTimestampMs - this.originMs - MIX_DELAY_MS) * SAMPLE_RATE / 1_000),
-    );
-    this.flushThrough(Math.min(safeThrough, this.highestSample));
   }
 
   async finish(): Promise<void> {
     if (this.finished) return;
     this.finished = true;
-    this.flushThrough(this.highestSample);
+    clearInterval(this.flushTimer);
+    // Drain the remaining mix window without replaying a backlog faster than real time.
+    while (this.emittedSamples < this.highestSample && this.socket.readyState === WebSocket.OPEN) {
+      const count = Math.min(MAX_PCM_SAMPLES, this.highestSample - this.emittedSamples);
+      this.flushThrough(this.emittedSamples + count);
+      if (this.emittedSamples < this.highestSample) {
+        await new Promise<void>((resolve) => setTimeout(resolve, count * 1_000 / SAMPLE_RATE));
+      }
+    }
     if (this.socket.readyState !== WebSocket.OPEN) {
       throw this.failure ?? new Error('Volta audio stream is unavailable');
     }
