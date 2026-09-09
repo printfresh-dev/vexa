@@ -27,7 +27,6 @@
 import {
   launchPersistentBrowser,
   syncBrowserDataFromS3,
-  syncBrowserDataToS3,
   cleanStaleLocks,
   getAuthenticatedBrowserArgs,
   makeEphemeralProfileDir,
@@ -234,18 +233,9 @@ export async function launchBrowser(inv: Invocation): Promise<BrowserSession> {
     page,
     async close() {
       await context.close().catch(() => { /* best-effort */ });
-      // Write-back on clean teardown (#725): Google rotates session cookies during use, so the
-      // durable copy is refreshed from the LIVE profile dir after the context flushes — the next
-      // spawn restores the freshest state instead of a decaying snapshot. Clean teardown only:
-      // a SIGKILL never reaches close(), so a hard-killed meeting keeps the last durable copy.
-      // Failures are attributed warnings, bounded per upload — teardown never hangs on S3.
-      if (inv.authenticated && inv.userdataS3Path) {
-        try {
-          syncBrowserDataToS3(s3Config, dataDir);
-        } catch (e) {
-          console.error(`[bot] session write-back failed (durable copy stays at last restore): ${String(e)}`);
-        }
-      }
+      // A meeting runs on a disposable snapshot. Only confirmed provisioning or
+      // reauthentication may update the durable profile; meeting teardown must
+      // not overwrite a newer session with this meeting's stale snapshot.
       removeProfileDir(dataDir);   // per-bot dir — leaking one per bot fills the disk in vexa-lite
     },
   };

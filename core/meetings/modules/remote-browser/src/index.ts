@@ -5,9 +5,10 @@
  * (cookies / localStorage / Login Data) is saved and retrievable — so the join
  * layer can be handed an already-authenticated page (BotConfig.authenticated).
  *
- * Two flows:
- *   1. provisionLogin()  — start browser + VNC → human logs in → persist session.
+ * Three flows:
+ *   1. provisionLogin() — human VNC login → optional protected-identity check → persist.
  *   2. launchPersistentBrowser({dataDir}) + validateLoggedIn() — restore + confirm.
+ *   3. reauth-cli.js — machine check or one bounded credential-backed Google recovery.
  *
  * Backends: S3 (syncBrowserData{To,From}S3 — production) or local (save/loadSessionLocal).
  * Carved from vexa-bot/core/src/{s3-sync.ts, browser-session.ts, constans.ts}; the bot
@@ -46,5 +47,7 @@ export type { Page, BrowserContext } from 'playwright';
 export { validateLoggedIn, AUTH_LOGIN_URLS, AUTH_COOKIES } from './validate';
 export { provisionLogin } from './login';
 export type { ProvisionLoginOptions } from './login';
+export { attemptGoogleLogin, generateTotp, isTrustedGoogleAccountsUrl } from './google-auth';
+export type { AuthReasonCode, GoogleCredentials, GoogleLoginResult } from './google-auth';
 
-export type { AuthPlatform, LoginStatus } from './types';
+export type { AuthPlatform, LoginStatus, LoginStatusReason } from './types';

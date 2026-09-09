@@ -21,6 +21,8 @@ export interface ProvisionLoginOptions {
   /** Optional durable copy of the auth-essential subset (e.g. a synced dir). */
   backupDir?: string;
   loginUrl?: string;
+  /** Protected identity required before a Google profile may be accepted. */
+  expectedGoogleEmail?: string;
   /** Cookie poll interval (default 3s). */
   pollMs?: number;
   /** How long to wait for the human to finish logging in (default 5min). */
@@ -38,7 +40,7 @@ export async function provisionLogin(opts: ProvisionLoginOptions): Promise<Login
   cleanStaleLocks(opts.profileDir);
 
   const { context, page } = await launchPersistentBrowser({ dataDir: opts.profileDir, args: getBrowserSessionArgs() });
-  console.log(`[remote-browser] login: opened ${loginUrl} — sign in via VNC (:6080). Waiting up to ${Math.round(timeoutMs / 1000)}s...`);
+  console.log(`[remote-browser] login: opened ${opts.platform} sign-in page — sign in via VNC (:6080). Waiting up to ${Math.round(timeoutMs / 1000)}s...`);
   try { await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }); } catch { /* keep polling regardless */ }
 
   // Detect login by the page LEAVING the sign-in / OAuth pages — a reliable,
@@ -48,12 +50,16 @@ export async function provisionLogin(opts: ProvisionLoginOptions): Promise<Login
   const onAuthPage = (u: string) =>
     !u || /about:blank|\/signin|\/login|accounts\.google\.com|login\.microsoftonline\.com|login\.live\.com/i.test(u);
   const deadline = Date.now() + timeoutMs;
-  let status: LoginStatus = { loggedIn: false, detail: 'timed out waiting for sign-in' };
+  let status: LoginStatus = {
+    loggedIn: false,
+    reason: 'signed_out',
+    detail: 'timed out waiting for sign-in',
+  };
   while (Date.now() < deadline) {
     await page.waitForTimeout(pollMs);
     let u = ''; try { u = page.url(); } catch { /* navigating */ }
     if (onAuthPage(u)) continue;                            // still signing in — don't disturb the user
-    status = await validateLoggedIn(page, opts.platform);   // left the login page — confirm for real
+    status = await validateLoggedIn(page, opts.platform, opts.expectedGoogleEmail);
     if (status.loggedIn) break;
     // Off the login page but not yet confirmed (intermediate/redirect); validateLoggedIn
     // leaves us back on the sign-in page, so the next tick simply keeps waiting.
