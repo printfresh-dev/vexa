@@ -1,7 +1,7 @@
 {
   "name": "@vexa/remote-browser",
   "version": "0.1.0",
-  "description": "Remote browser as container: persistent-context launch (VNC/CDP), browser-session persistence + retrieval (cookies/localStorage), and logged-in validation \u2014 so the join layer can join authenticated.",
+  "description": "Remote browser as container: persistent-context launch (VNC/CDP), browser-session persistence + retrieval (cookies/localStorage), and logged-in validation — so the join layer can join authenticated.",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsx src/auth.smoke.test.ts && tsx src/reauth.test.ts && tsx src/session-store.test.ts",
+    "test": "tsx src/auth.smoke.test.ts && tsx src/google-stage.test.ts && tsx src/reauth.test.ts && tsx src/session-store.test.ts",
     "check:isolation": "node scripts/check-isolation.js",
     "login": "tsx src/provision-cli.ts",
     "reauth": "node dist/reauth-cli.js"
