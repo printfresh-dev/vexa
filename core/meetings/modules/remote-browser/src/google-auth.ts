@@ -46,7 +46,21 @@ const OTHER_ACCOUNT_SELECTORS = [
   '[role="link"]:has-text("Use another account")',
 ];
 
-type LoginStage =
+/**
+ * Google serves the ordinary password and TOTP steps under /challenge/ paths
+ * (`/v3/signin/challenge/pwd`, `/v3/signin/challenge/totp`). Both are steps
+ * this module answers itself, so they must never be reported as a challenge
+ * needing a human. Anything else under /challenge/ — CAPTCHA, device prompt,
+ * SMS, security key, account recovery — genuinely requires an operator.
+ */
+const ANSWERABLE_CHALLENGE_PATHS = ['/challenge/pwd', '/challenge/totp'] as const;
+
+export function isAnswerableChallengePath(path: string): boolean {
+  const normalized = path.toLowerCase();
+  return ANSWERABLE_CHALLENGE_PATHS.some((answerable) => normalized.includes(answerable));
+}
+
+export type LoginStage =
   | 'account'
   | 'email'
   | 'password'
@@ -80,7 +94,7 @@ async function firstVisible(page: Page, selectors: readonly string[]): Promise<L
   return null;
 }
 
-async function observeStage(page: Page): Promise<LoginStage> {
+export async function observeStage(page: Page): Promise<LoginStage> {
   const location = currentOriginAndPath(page);
   if (!location) return 'untrusted';
   if (location.origin === GOOGLE_ACCOUNT_ORIGIN) return 'account';
@@ -90,7 +104,12 @@ async function observeStage(page: Page): Promise<LoginStage> {
   if (location.path.includes('/challenge/totp') && await firstVisible(page, TOTP_INPUTS)) return 'totp';
   if (await firstVisible(page, PASSWORD_INPUTS)) return 'password';
   if (await firstVisible(page, EMAIL_INPUTS)) return 'email';
-  if (location.path.includes('/challenge/')) return 'challenge';
+  if (location.path.includes('/challenge/')) {
+    // The step's input renders asynchronously. Reporting an answerable step as
+    // 'challenge' before its input appears aborts a sign-in that would have
+    // succeeded, so report it as still pending and let the caller keep polling.
+    return isAnswerableChallengePath(location.path) ? 'pending' : 'challenge';
+  }
   return 'pending';
 }
 
