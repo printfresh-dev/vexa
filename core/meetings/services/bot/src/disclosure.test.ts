@@ -43,16 +43,26 @@ function fakePage(input: {
   advanceTime?: (milliseconds: number) => void;
   chatInitiallyOpen?: boolean;
   submissionRenders?: boolean;
+  zoomPopupOpen?: boolean;
 }): Page {
   let participantRead = 0;
   let chatOpen = input.chatInitiallyOpen ?? false;
   let composerText = '';
   let renderedText = false;
+  let zoomPopupOpen = input.zoomPopupOpen ?? false;
   const chatButton = {
     isVisible: async () => true,
     click: async () => {
+      if (zoomPopupOpen) throw new Error('chat button is covered by Zoom popup');
       input.actions.push('chat-click');
       chatOpen = !chatOpen;
+    },
+  };
+  const popupButton = {
+    isVisible: async () => zoomPopupOpen,
+    click: async () => {
+      zoomPopupOpen = false;
+      input.actions.push('popup-dismiss');
     },
   };
   const chatInput = {
@@ -86,11 +96,16 @@ function fakePage(input: {
           },
         };
       }
-      return {
-        first: () => selector.includes('textarea') || selector.includes('contenteditable')
-          ? chatInput
-          : chatButton,
-      };
+      if (selector.includes(':has-text(')) {
+        return { first: () => popupButton };
+      }
+      if (selector.includes('textarea') || selector.includes('contenteditable')) {
+        return { first: () => chatInput };
+      }
+      if (selector.toLocaleLowerCase().includes('chat')) {
+        return { first: () => chatButton };
+      }
+      return { first: () => ({ isVisible: async () => false }) };
     },
     waitForFunction: async () => {
       if (composerText !== '' || !renderedText) throw new Error('message was not rendered');
@@ -161,6 +176,28 @@ check(
   zoomOutcome.status === 'disclosed'
     && zoomOutcome.participantKeys.has('alice example')
     && !zoomOutcome.participantKeys.has('volta notetaker (me)'),
+);
+
+let overlayDisclosureSucceeded = true;
+const overlayActions: string[] = [];
+try {
+  await discloseInMeeting(
+    fakePage({
+      participantSets: [[participant('zoom-bot', 'Volta Notetaker (Me)'), alice]],
+      actions: overlayActions,
+      zoomPopupOpen: true,
+    }),
+    'connection-zoom-overlay',
+    config,
+    'zoom',
+  );
+} catch {
+  overlayDisclosureSucceeded = false;
+}
+check(
+  'dismisses a Zoom overlay before opening chat',
+  overlayDisclosureSucceeded
+    && overlayActions.indexOf('popup-dismiss') < overlayActions.indexOf('chat-click'),
 );
 
 let unsentDisclosureRejected = false;

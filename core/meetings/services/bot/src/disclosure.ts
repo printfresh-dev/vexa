@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Page } from '@vexa/remote-browser';
+import { dismissZoomPopups } from '@vexa/join';
 
 const GOOGLE_CHAT_BUTTON_SELECTORS = [
   'button[aria-label*="chat" i]',
@@ -203,6 +204,7 @@ async function postDisclosure(
   platform: DisclosurePlatform,
   signal?: AbortSignal,
 ): Promise<void> {
+  if (platform === 'zoom') await dismissZoomPopups(page);
   const buttonSelectors = platform === 'zoom'
     ? ZOOM_CHAT_BUTTON_SELECTORS
     : GOOGLE_CHAT_BUTTON_SELECTORS;
