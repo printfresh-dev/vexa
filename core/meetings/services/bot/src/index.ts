@@ -37,7 +37,16 @@ import { createBotRecordingSink } from './recording.js';
 import { createCaptureSignalRecorder, wrapTranscribeWithTap, type CaptureSignalRecorder } from './telemetry.js';
 import { createSttFaultReporter } from './stt-faults.js';
 import { launchBrowser, startCaptureBridge, startRecording, createSpeakController, type BrowserSession, type SpeakController } from './capture-bridge.js';
-import { createRemoteAudioActivityTap, createSilenceAlonenessSource, resolveAloneNotBeforeMs, resolveAloneSilenceWindowMs } from './aloneness.js';
+import {
+  DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS,
+  createMeetRosterAlonenessAdapter,
+  createRemoteAudioActivityTap,
+  createRosterPresenceTap,
+  createSilenceAlonenessSource,
+  resolveAloneNotBeforeMs,
+  resolveAloneSilenceWindowMs,
+  silenceAlonenessAdapter,
+} from './aloneness.js';
 import { installSignalHandlers } from './signals.js';
 import type {
   JoinDriver,
@@ -243,14 +252,26 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
   const sttFaults = createSttFaultReporter();
   const speakerStreamConfig = speakerStreamConfigFromEnv(env);
   const remoteAudioActivity = createRemoteAudioActivityTap();
+  const meetRosterPresence = inv.platform === 'google_meet'
+    ? createRosterPresenceTap()
+    : undefined;
   const aloneSilenceWindowMs = resolveAloneSilenceWindowMs(inv.automaticLeave?.everyoneLeftTimeout, env);
   const aloneNotBeforeMs = resolveAloneNotBeforeMs(env);
   const aloneness = createSilenceAlonenessSource({
     activity: remoteAudioActivity,
     windowMs: aloneSilenceWindowMs,
     ...(aloneNotBeforeMs === undefined ? {} : { notBeforeMs: aloneNotBeforeMs }),
+    ...(meetRosterPresence === undefined ? {} : {
+      adapters: [
+        silenceAlonenessAdapter,
+        createMeetRosterAlonenessAdapter(meetRosterPresence),
+      ],
+    }),
   });
   console.log(`[bot] aloneness: silence adapter enabled (window_ms=${aloneSilenceWindowMs}, not_before_ms=${aloneNotBeforeMs ?? 'none'})`);
+  if (meetRosterPresence) {
+    console.log(`[bot] aloneness: meet-roster adapter enabled (debounce_ms=${DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS}, fallback=silence)`);
+  }
   if (speakerStreamConfig) console.log(`[bot] speaker-stream tuning enabled: ${JSON.stringify(speakerStreamConfig)}`);
 
   try {
@@ -294,7 +315,15 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<number
     // each failure surfaces LOUD via onFault (console with a full-fidelity serr(e)) instead of
     // throwing into the orchestrator's leave-on-fail backstop (which would hang the bot up).
     pipeline = createLivePipeline({
-      startCapture: () => startCaptureBridge(sess.page, inv, bp, signalRecorder?.sink, publishChat, remoteAudioActivity),   // on the live meeting page
+      startCapture: () => startCaptureBridge(
+        sess.page,
+        inv,
+        bp,
+        signalRecorder?.sink,
+        publishChat,
+        remoteAudioActivity,
+        meetRosterPresence,
+      ),   // on the live meeting page
       startRecording: rec ? () => startRecording(sess.page, inv, rec) : undefined,          // MediaRecorder → recording.v1
       engine: bp,
       onFault: (stage, e) => {

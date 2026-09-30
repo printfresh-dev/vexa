@@ -3,6 +3,7 @@ import type { AlonenessSource } from './ports.js';
 
 export const DEFAULT_ALONE_SILENCE_WINDOW_MS = 10 * 60 * 1000;
 export const DEFAULT_ALONENESS_POLL_MS = 1_500;
+export const DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS = 5_000;
 /** Presence floor for a DELIVERED remote frame — deliberately 0 (arrival is the signal).
  *
  *  Capture is the single silence oracle: the page emits a frame only when its PEAK sample exceeds
@@ -40,7 +41,7 @@ export interface RemoteAudioActivityTap extends RemoteAudioActivitySource {
 
 export type AlonenessVerdict = 'alone' | 'not-alone' | 'unavailable';
 
-/** One deployment-selectable rule. Future presence checks can veto by returning not-alone. */
+/** One deployment-selectable rule. Later adapters override earlier ones while available. */
 export interface AlonenessAdapter {
   readonly name: string;
   evaluate(snapshot: RemoteAudioActivitySnapshot, now: number, windowMs: number): AlonenessVerdict;
@@ -73,6 +74,73 @@ export function createRemoteAudioActivityTap(options: {
     },
     snapshot(): RemoteAudioActivitySnapshot {
       return { ...state };
+    },
+  };
+}
+
+export interface RosterPresenceSnapshot {
+  hasSeenRemoteParticipant: boolean;
+  remoteParticipantCount?: number;
+  selfPresent?: boolean;
+  emptySince?: number;
+}
+
+export interface RosterPresenceSource {
+  snapshot(): RosterPresenceSnapshot;
+}
+
+export interface RosterPresenceTap extends RosterPresenceSource {
+  observe(remoteParticipantCount: number, selfPresent: boolean): void;
+  unavailable(): void;
+}
+
+export function createRosterPresenceTap(options: {
+  now?: () => number;
+} = {}): RosterPresenceTap {
+  const now = options.now ?? Date.now;
+  let state: RosterPresenceSnapshot = { hasSeenRemoteParticipant: false };
+
+  return {
+    observe(remoteParticipantCount, selfPresent): void {
+      if (!Number.isInteger(remoteParticipantCount)
+        || remoteParticipantCount < 0
+        || typeof selfPresent !== 'boolean') {
+        state = { hasSeenRemoteParticipant: state.hasSeenRemoteParticipant };
+        return;
+      }
+      const hasSeenRemoteParticipant =
+        state.hasSeenRemoteParticipant || (selfPresent && remoteParticipantCount > 0);
+      const emptySince = selfPresent && remoteParticipantCount === 0
+        ? state.selfPresent && state.remoteParticipantCount === 0
+          ? state.emptySince
+          : now()
+        : undefined;
+      state = { hasSeenRemoteParticipant, remoteParticipantCount, selfPresent, emptySince };
+    },
+    unavailable(): void {
+      state = { hasSeenRemoteParticipant: state.hasSeenRemoteParticipant };
+    },
+    snapshot(): RosterPresenceSnapshot {
+      return { ...state };
+    },
+  };
+}
+
+export function createMeetRosterAlonenessAdapter(
+  roster: RosterPresenceSource,
+  debounceMs = DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS,
+): AlonenessAdapter {
+  return {
+    name: 'meet-roster',
+    evaluate(_activity, now): AlonenessVerdict {
+      const snapshot = roster.snapshot();
+      if (!snapshot.hasSeenRemoteParticipant
+        || snapshot.remoteParticipantCount === undefined
+        || !snapshot.selfPresent) return 'unavailable';
+      if (snapshot.remoteParticipantCount > 0) return 'not-alone';
+      return snapshot.emptySince !== undefined && now - snapshot.emptySince >= debounceMs
+        ? 'alone'
+        : 'not-alone';
     },
   };
 }
@@ -148,14 +216,26 @@ export function createSilenceAlonenessSource(options: {
       const tick = (): void => {
         if (stopped || fired || adapters.length === 0) return;
         const at = now();
-        if (options.notBeforeMs !== undefined && at < options.notBeforeMs) return;
         const snapshot = options.activity.snapshot();
-        for (const adapter of adapters) {
-          if (adapter.evaluate(snapshot, at, options.windowMs) !== 'alone') return;
+        let decision: { adapter: AlonenessAdapter; verdict: AlonenessVerdict } | undefined;
+        for (let index = adapters.length - 1; index >= 0; index--) {
+          const adapter = adapters[index];
+          const verdict = adapter.evaluate(snapshot, at, options.windowMs);
+          if (verdict !== 'unavailable') {
+            decision = { adapter, verdict };
+            break;
+          }
         }
+        if (!decision || decision.verdict !== 'alone') return;
+        if (decision.adapter.name === 'silence'
+          && options.notBeforeMs !== undefined
+          && at < options.notBeforeMs) return;
         fired = true;
         stop();
-        log(`aloneness: silence verdict (last_remote_audio_at=${snapshot.lastRemoteAudioAt}, window_ms=${options.windowMs}, not_before_ms=${options.notBeforeMs ?? 'none'})`);
+        const detail = decision.adapter.name === 'silence'
+          ? ` (last_remote_audio_at=${snapshot.lastRemoteAudioAt}, window_ms=${options.windowMs}, not_before_ms=${options.notBeforeMs ?? 'none'})`
+          : '';
+        log(`aloneness: ${decision.adapter.name} verdict${detail}`);
         callback();
       };
 

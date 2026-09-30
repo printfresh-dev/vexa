@@ -1,10 +1,14 @@
-/** Deterministic proof for silence-based active-phase aloneness. */
+/** Deterministic proof for active-phase silence and Meet-roster aloneness. */
 import {
   DEFAULT_ALONE_SILENCE_WINDOW_MS,
+  DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS,
+  createMeetRosterAlonenessAdapter,
   createRemoteAudioActivityTap,
+  createRosterPresenceTap,
   createSilenceAlonenessSource,
   resolveAloneNotBeforeMs,
   resolveAloneSilenceWindowMs,
+  silenceAlonenessAdapter,
 } from './aloneness.js';
 
 let failed = 0;
@@ -49,6 +53,26 @@ function fixture(windowMs = 1_000) {
     log: () => { /* deterministic fixture: logs asserted by live evidence */ },
   });
   return { clock, scheduler, activity, source };
+}
+
+function meetFixture(silenceWindowMs = 1_000) {
+  const clock = new FakeClock();
+  const scheduler = new FakeScheduler();
+  const activity = createRemoteAudioActivityTap({ now: clock.now });
+  const roster = createRosterPresenceTap({ now: clock.now });
+  const logs: string[] = [];
+  activity.ready();
+  const source = createSilenceAlonenessSource({
+    activity,
+    windowMs: silenceWindowMs,
+    adapters: [silenceAlonenessAdapter, createMeetRosterAlonenessAdapter(roster)],
+    now: clock.now,
+    pollMs: 10,
+    setInterval: scheduler.setInterval,
+    clearInterval: scheduler.clearInterval,
+    log: (message) => logs.push(message),
+  });
+  return { clock, scheduler, activity, roster, source, logs };
 }
 
 // silence(W) fires once from the capture-ready anchor.
@@ -208,6 +232,79 @@ function fixture(windowMs = 1_000) {
   check('a future adapter can veto the silence verdict', fired === 0);
 }
 
+// A trusted empty Meet roster overrides silence and fires after its five-second debounce.
+{
+  const f = meetFixture();
+  let fired = 0;
+  f.roster.observe(1, true);
+  f.source.onAlone(() => fired++);
+  f.roster.observe(0, true);
+  f.clock.advance(DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS - 1); f.scheduler.tick();
+  check('empty Meet roster waits for the five-second debounce', fired === 0);
+  f.clock.advance(1); f.scheduler.tick();
+  check('empty Meet roster fires at five seconds', fired === 1);
+  check('roster verdict names its adapter in the log',
+    f.logs.length === 1 && f.logs[0].includes('meet-roster'));
+}
+
+// A transient empty render is cancelled when a remote participant returns.
+{
+  const f = meetFixture();
+  let fired = 0;
+  f.roster.observe(1, true);
+  f.source.onAlone(() => fired++);
+  f.roster.observe(0, true);
+  f.clock.advance(DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS - 1);
+  f.roster.observe(1, true);
+  f.clock.advance(10_000); f.scheduler.tick();
+  check('participant returning inside five seconds cancels the roster verdict', fired === 0);
+}
+
+// An initially empty roster is unavailable until this session has seen a real remote participant.
+{
+  const f = meetFixture(10_000);
+  let fired = 0;
+  f.roster.observe(0, true);
+  f.source.onAlone(() => fired++);
+  f.clock.advance(DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS); f.scheduler.tick();
+  check('empty roster is not trusted before a remote participant is seen', fired === 0);
+  f.clock.advance(5_000); f.scheduler.tick();
+  check('untrusted roster falls back to the unchanged silence window',
+    fired === 1 && f.logs[0]?.includes('silence'));
+}
+
+// Losing the self marker makes the roster unavailable, even after it was proven.
+{
+  const f = meetFixture();
+  let fired = 0;
+  f.roster.observe(1, true);
+  f.roster.observe(0, false);
+  f.source.onAlone(() => fired++);
+  f.clock.advance(1_000); f.scheduler.tick();
+  check('missing self tile makes roster unavailable and silence decides',
+    fired === 1 && f.logs[0]?.includes('silence'));
+}
+
+// A trusted non-empty roster vetoes silence for quiet meetings.
+{
+  const f = meetFixture();
+  let fired = 0;
+  f.roster.observe(1, true);
+  f.source.onAlone(() => fired++);
+  f.clock.advance(60_000); f.scheduler.tick();
+  check('quiet Meet with remote participants never goes alone', fired === 0);
+}
+
+// Platforms without the Meet roster adapter retain the original silence-only rule.
+{
+  const f = fixture();
+  let fired = 0;
+  f.activity.ready();
+  f.source.onAlone(() => fired++);
+  f.clock.advance(1_000); f.scheduler.tick();
+  check('non-Meet platforms retain silence-based aloneness', fired === 1);
+}
+
 // Timeout precedence: explicit invocation > valid env > 10-minute module default.
 {
   check('explicit everyoneLeftTimeout wins',
@@ -230,5 +327,5 @@ function fixture(windowMs = 1_000) {
 
 console.log(failed
   ? `\n❌ aloneness: ${failed} failed`
-  : '\n✅ aloneness (L2): scripted remote-audio timelines prove silence, reset, fail-closed, exactly-once, and timeout precedence.');
+  : '\n✅ aloneness (L2): remote-audio and Meet-roster timelines prove fallback, precedence, debounce, and exactly-once.');
 process.exit(failed ? 1 : 0);

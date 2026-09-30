@@ -90,11 +90,17 @@ const tile = (id: string, name: string, opts: { speaking?: boolean; self?: boole
 {
   // The self tile (data-self-name) never emits a hint, even while glowing.
   const hints: { name: string }[] = [];
+  const roster: { remoteParticipants: number; selfPresent: boolean }[] = [];
   setDoc(e('body', {}, [ tile('me', 'Host', { speaking: true, self: true }), tile('p2', 'Carol', { speaking: true }) ]));
-  const sp = createGmeetSpeakers({ pollMs: 10, onSpeaking: (name) => hints.push({ name }) });
+  const sp = createGmeetSpeakers({
+    pollMs: 10,
+    onSpeaking: (name) => hints.push({ name }),
+    onRoster: (remoteParticipants, selfPresent) => roster.push({ remoteParticipants, selfPresent }),
+  });
   tick();
   check('self tile never emits', !hints.some((h) => h.name === 'Host'));
   check('a non-self glowing tile still emits', hints.some((h) => h.name === 'Carol'));
+  check('roster reports non-self tiles and finds the bot', roster.some((r) => r.remoteParticipants === 1 && r.selfPresent));
   sp.destroy();
 }
 {

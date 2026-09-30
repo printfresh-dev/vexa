@@ -40,7 +40,7 @@ import { isMixedLanePlatform, type Invocation } from './config.js';
 import type { BotPipeline } from './pipeline.js';
 import type { BotRecordingSink } from './recording.js';
 import type { TelemetrySink } from './ports.js';
-import type { RemoteAudioActivityTap } from './aloneness.js';
+import type { RemoteAudioActivityTap, RosterPresenceTap } from './aloneness.js';
 import { createTtsPlayback } from './tts-playback.js';
 import { openVoltaAudioStreamFromEnvironment } from './volta-audio-stream.js';
 
@@ -260,6 +260,8 @@ export async function startCaptureBridge(
   onChat?: (sender: string, text: string) => void,
   /** Active-phase silence signal. It remains unavailable until page capture reports ready. */
   activity?: RemoteAudioActivityTap,
+  /** Meet-only roster signal. Other platforms leave this unwired and retain silence semantics. */
+  roster?: RosterPresenceTap,
 ): Promise<() => Promise<void>> {
   const mixed = isMixedLanePlatform(inv.platform);
   const jitsi = inv.platform === 'jitsi';
@@ -316,6 +318,15 @@ export async function startCaptureBridge(
   await page.exposeFunction('__vexaRemoteAudioReady', (): void => activity?.ready()).catch((e: Error) => {
     if (!String(e.message).includes('already registered')) throw e;
   });
+  if (roster) {
+    await page.exposeFunction(
+      '__vexaRosterPresence',
+      (remoteParticipantCount: number, selfPresent: boolean): void =>
+        roster.observe(remoteParticipantCount, selfPresent),
+    ).catch((e: Error) => {
+      if (!String(e.message).includes('already registered')) throw e;
+    });
+  }
   // jitsi chat → the embedder's sink (a transcript.v1 `chat` segment at the composition root).
   await page.exposeFunction('__vexaChatMessage', (sender: string, text: string): void => {
     try { onChat?.(sender, text); } catch (e) { console.error(`[bot] chat sink rejected: ${String(e)}`); }
@@ -430,6 +441,8 @@ export async function startCaptureBridge(
           onSpeaking: (name: string, isEnd: boolean) =>
             channelBinder?.recordGlow(name, isEnd, Date.now()),
           onSelf: (name: string) => channelBinder?.setSelfName(name),
+          onRoster: (remoteParticipantCount: number, selfPresent: boolean) =>
+            w.__vexaRosterPresence?.(remoteParticipantCount, selfPresent),
         });
       w.__vexaGmeetCapture = w.VexaBrowserUtils.createGmeetCapture({
         log: (m: string) => w.logBot?.('[PerSpeaker] ' + m),
@@ -455,6 +468,7 @@ export async function startCaptureBridge(
   return async () => {
     if (countersTimer) clearInterval(countersTimer);
     activity?.unavailable();
+    roster?.unavailable();
     await page.evaluate(() => {
       const w = (globalThis as any) as Record<string, any>;
       try { w.__vexaGmeetCapture?.stop?.(); } catch { /* best-effort */ }
