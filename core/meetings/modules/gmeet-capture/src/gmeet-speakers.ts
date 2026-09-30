@@ -37,6 +37,9 @@ export interface GmeetSpeakersOptions {
    *  (the data-self-name marker can render late). Lets the channel binder pin a sticky
    *  self name it refuses to bind to any remote channel — the leak-proof backstop. */
   onSelf?: (name: string) => void;
+  /** Every tile scan reports the count of non-self tiles and whether Meet's structural
+   *  self marker was found. */
+  onRoster?: (remoteParticipantCount: number, selfPresent: boolean) => void;
   /** Log sink (defaults to console.log). */
   log?: (msg: string) => void;
   /** Poll interval (ms). Default 500. */
@@ -175,12 +178,20 @@ export function createGmeetSpeakers(opts: GmeetSpeakersOptions = {}): GmeetSpeak
 
     // Report the self/host name (once) so the binder can pin it as never-bindable —
     // the data-self-name marker can render late, so we watch every scan, not just start.
+    let remoteParticipantCount = 0;
+    let selfPresent = false;
     for (const t of tiles) {
-      if (t.self && t.name && !reportedSelf.has(t.name)) {
-        reportedSelf.add(t.name);
-        try { opts.onSelf?.(t.name); } catch { /* consumer error */ }
+      if (t.self) {
+        selfPresent = true;
+        if (t.name && !reportedSelf.has(t.name)) {
+          reportedSelf.add(t.name);
+          try { opts.onSelf?.(t.name); } catch { /* consumer error */ }
+        }
+      } else {
+        remoteParticipantCount++;
       }
     }
+    try { opts.onRoster?.(remoteParticipantCount, selfPresent); } catch { /* consumer error */ }
 
     // Currently-lit, non-self, named tiles.
     const litNow = new Set<string>(
