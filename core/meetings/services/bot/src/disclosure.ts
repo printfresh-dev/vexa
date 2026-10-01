@@ -24,6 +24,16 @@ const GOOGLE_CHAT_INPUT_SELECTORS = [
   '[contenteditable="true"][data-placeholder*="message" i]',
 ] as const;
 
+// Meet's post-join tips and dialogs. Exact labels only: substring matches such as
+// aria-label*="ok" would also hit unrelated controls in the meeting UI.
+const GOOGLE_TRANSIENT_OVERLAY_SELECTORS = [
+  'button:text-is("Got it")',
+  'button:text-is("Dismiss")',
+  'button:text-is("OK")',
+  'button[aria-label="Dismiss"]',
+  'button[aria-label="Close"]',
+] as const;
+
 const ZOOM_CHAT_INPUT_SELECTORS = [
   'textarea[placeholder*="message" i]',
   'textarea[aria-label*="message" i]',
@@ -61,6 +71,10 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new Error('disclosure_aborted');
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function firstVisible(
   page: Page,
   selectors: readonly string[],
@@ -87,6 +101,17 @@ async function firstVisibleNow(
     if (await candidate.isVisible().catch(() => false)) return candidate;
   }
   return null;
+}
+
+async function dismissGoogleMeetPopups(page: Page): Promise<void> {
+  for (const selector of GOOGLE_TRANSIENT_OVERLAY_SELECTORS) {
+    try {
+      const button = page.locator(selector).first();
+      if (await button.isVisible({ timeout: 0 })) {
+        await button.click({ timeout: STEP_TIMEOUT_MS });
+      }
+    } catch { /* not present or already gone */ }
+  }
 }
 
 interface BrowserElement {
@@ -214,39 +239,70 @@ async function postDisclosure(
   const platformName = platform === 'zoom' ? 'Zoom' : 'Google Meet';
   let input = await firstVisibleNow(page, inputSelectors);
   if (input === null) {
+    if (platform === 'google_meet') await dismissGoogleMeetPopups(page);
     const button = await firstVisible(page, buttonSelectors, signal);
     if (!button) throw new Error(`disclosure_failed: ${platformName} chat button was not found`);
-    await button.click({ timeout: STEP_TIMEOUT_MS });
+    try {
+      await button.click({ timeout: STEP_TIMEOUT_MS });
+    } catch (error) {
+      throw new Error(`disclosure_failed: ${platformName} chat button click failed: ${errorMessage(error)}`);
+    }
     input = await firstVisible(page, inputSelectors, signal);
   }
   if (!input) throw new Error(`disclosure_failed: ${platformName} chat input was not found`);
-  await input.fill(config.text, { timeout: STEP_TIMEOUT_MS });
+  try {
+    await input.fill(config.text, { timeout: STEP_TIMEOUT_MS });
+  } catch (error) {
+    throw new Error(`disclosure_failed: ${platformName} chat input fill failed: ${errorMessage(error)}`);
+  }
   const renderedAt = new Date().toISOString();
-  await input.press('Enter', { timeout: STEP_TIMEOUT_MS });
+  try {
+    await input.press('Enter', { timeout: STEP_TIMEOUT_MS });
+  } catch (error) {
+    throw new Error(`disclosure_failed: ${platformName} chat message submission failed: ${errorMessage(error)}`);
+  }
   if (!await verifyRenderedText(page, config.text)) {
     throw new Error(`disclosure_failed: sent text could not be verified in ${platformName} chat`);
   }
   throwIfAborted(signal);
+  await reportDisclosureVerified(connectionId, config, renderedAt, signal);
+}
+
+async function reportDisclosureVerified(
+  connectionId: string,
+  config: VoltaDisclosureConfig,
+  renderedAt: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const verifiedAt = new Date().toISOString();
-  const response = await fetch(config.callbackUrl, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-internal-secret': config.internalSecret,
-    },
-    body: JSON.stringify({
-      connection_id: connectionId,
-      status: 'disclosure_verified',
-      rendered_text_sha256: createHash('sha256').update(config.text, 'utf8').digest('hex'),
-      rendered_at: renderedAt,
-      verified_at: verifiedAt,
-    }),
-    signal: AbortSignal.timeout(STEP_TIMEOUT_MS),
-  });
+  let response: Response;
+  try {
+    response = await fetch(config.callbackUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-internal-secret': config.internalSecret,
+      },
+      body: JSON.stringify({
+        connection_id: connectionId,
+        status: 'disclosure_verified',
+        rendered_text_sha256: createHash('sha256').update(config.text, 'utf8').digest('hex'),
+        rendered_at: renderedAt,
+        verified_at: verifiedAt,
+      }),
+      signal: AbortSignal.timeout(STEP_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throwIfAborted(signal);
+    throw new Error(`disclosure_failed: callback request failed: ${errorMessage(error)}`);
+  }
   if (!response.ok) {
     throw new Error(`disclosure_failed: callback returned HTTP ${response.status}`);
   }
 }
+
+/** In-join attempts at the Meet notice; bounds repeat posts if verification itself is broken. */
+const MEET_DISCLOSURE_MAX_ATTEMPTS = 6;
 
 export async function discloseInMeeting(
   page: Page,
@@ -257,8 +313,39 @@ export async function discloseInMeeting(
 ): Promise<DisclosureOutcome> {
   const participantKeys = await waitForRemoteParticipant(page, config, platform, signal);
   if (participantKeys === null) return { status: 'no_participant' };
-  await postDisclosure(page, connectionId, config, platform, signal);
-  return { status: 'disclosed', participantKeys };
+  if (platform !== 'google_meet') {
+    try {
+      await postDisclosure(page, connectionId, config, platform, signal);
+    } catch (error) {
+      console.error(`[bot] disclosure: ${errorMessage(error)}`);
+      throw error;
+    }
+    return { status: 'disclosed', participantKeys };
+  }
+  const deadline = Date.parse(config.participantDeadlineAt);
+  let attempt = 1;
+  while (true) {
+    try {
+      // A retry must not post the notice again if an earlier attempt already rendered it
+      // (e.g. only verification or the callback failed): confirm the visible notice instead.
+      if (attempt > 1 && await verifyRenderedText(page, config.text)) {
+        await reportDisclosureVerified(connectionId, config, new Date().toISOString(), signal);
+      } else {
+        await postDisclosure(page, connectionId, config, platform, signal);
+      }
+      return { status: 'disclosed', participantKeys };
+    } catch (error) {
+      throwIfAborted(signal);
+      console.error(`[bot] disclosure: ${errorMessage(error)}`);
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0 || attempt >= MEET_DISCLOSURE_MAX_ATTEMPTS) throw error;
+      await page.waitForTimeout(Math.min(DISCLOSURE_RETRY_MS, remainingMs));
+      if (Date.now() > deadline) throw error;
+      throwIfAborted(signal);
+      attempt += 1;
+      console.log(`[bot] disclosure: retry attempt ${attempt}`);
+    }
+  }
 }
 
 export function discloseInGoogleMeet(
@@ -290,19 +377,23 @@ export function startDisclosureMonitor(
   let stopped = false;
   let posting = false;
   let retryAt = 0;
+  let attempt = 0;
   const inspect = async (): Promise<void> => {
     if (stopped || posting || page.isClosed() || Date.now() < retryAt) return;
     const participants = await remoteParticipantKeys(page, config.botName, platform);
     const hasUndisclosedParticipant = [...participants].some((key) => !disclosedParticipants.has(key));
     if (!hasUndisclosedParticipant) return;
+    attempt += 1;
+    if (attempt > 1) console.log(`[bot] disclosure: retry attempt ${attempt}`);
     posting = true;
     try {
       await postDisclosure(page, connectionId, config, platform);
       for (const key of participants) disclosedParticipants.add(key);
       retryAt = 0;
+      attempt = 0;
     } catch (error) {
       retryAt = Date.now() + DISCLOSURE_RETRY_MS;
-      console.error(`[bot] participant disclosure retry scheduled: ${String(error)}`);
+      console.error(`[bot] disclosure: ${errorMessage(error)}; retry scheduled`);
     } finally {
       posting = false;
     }

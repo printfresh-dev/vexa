@@ -44,24 +44,35 @@ function fakePage(input: {
   chatInitiallyOpen?: boolean;
   submissionRenders?: boolean;
   zoomPopupOpen?: boolean;
+  meetOverlayOpen?: boolean;
+  chatClickFailures?: number;
+  verificationFailures?: number;
 }): Page {
   let participantRead = 0;
   let chatOpen = input.chatInitiallyOpen ?? false;
   let composerText = '';
   let renderedText = false;
   let zoomPopupOpen = input.zoomPopupOpen ?? false;
+  let meetOverlayOpen = input.meetOverlayOpen ?? false;
+  let chatClickFailures = input.chatClickFailures ?? 0;
+  let verificationFailures = input.verificationFailures ?? 0;
   const chatButton = {
     isVisible: async () => true,
     click: async () => {
-      if (zoomPopupOpen) throw new Error('chat button is covered by Zoom popup');
       input.actions.push('chat-click');
+      if (zoomPopupOpen || meetOverlayOpen) throw new Error('chat button is covered by popup');
+      if (chatClickFailures > 0) {
+        chatClickFailures -= 1;
+        throw new Error('transient chat click failure');
+      }
       chatOpen = !chatOpen;
     },
   };
   const popupButton = {
-    isVisible: async () => zoomPopupOpen,
+    isVisible: async () => zoomPopupOpen || meetOverlayOpen,
     click: async () => {
       zoomPopupOpen = false;
+      meetOverlayOpen = false;
       input.actions.push('popup-dismiss');
     },
   };
@@ -96,7 +107,7 @@ function fakePage(input: {
           },
         };
       }
-      if (selector.includes(':has-text(')) {
+      if (selector.includes(':has-text(') || selector.includes(':text-is(') || selector === 'button[aria-label="Close"]') {
         return { first: () => popupButton };
       }
       if (selector.includes('textarea') || selector.includes('contenteditable')) {
@@ -108,6 +119,10 @@ function fakePage(input: {
       return { first: () => ({ isVisible: async () => false }) };
     },
     waitForFunction: async () => {
+      if (verificationFailures > 0) {
+        verificationFailures -= 1;
+        throw new Error('message was not visible yet');
+      }
       if (composerText !== '' || !renderedText) throw new Error('message was not rendered');
     },
     waitForTimeout: async (milliseconds: number) => {
@@ -200,6 +215,59 @@ check(
     && overlayActions.indexOf('popup-dismiss') < overlayActions.indexOf('chat-click'),
 );
 
+const meetOverlayActions: string[] = [];
+const meetOverlayOutcome = await discloseInGoogleMeet(
+  fakePage({
+    participantSets: [[bot, alice]],
+    actions: meetOverlayActions,
+    meetOverlayOpen: true,
+  }),
+  'connection-meet-overlay',
+  config,
+);
+check(
+  'dismisses a Meet overlay before opening chat',
+  meetOverlayOutcome.status === 'disclosed'
+    && meetOverlayActions.indexOf('popup-dismiss') < meetOverlayActions.indexOf('chat-click'),
+);
+
+const retryActions: string[] = [];
+const retryOutcome = await discloseInGoogleMeet(
+  fakePage({
+    participantSets: [[bot, alice]],
+    actions: retryActions,
+    chatClickFailures: 1,
+  }),
+  'connection-meet-retry',
+  { ...config, participantDeadlineAt: new Date(Date.now() + 30_000).toISOString() },
+);
+check(
+  'retries a transient Meet chat failure inside the same join',
+  retryOutcome.status === 'disclosed'
+    && retryActions.filter((action) => action === 'chat-click').length === 2
+    && retryActions.filter((action) => action === `fill:${text}`).length === 1,
+);
+
+// Production risk: a notice that posted but failed verification must not be posted again.
+const repostActions: string[] = [];
+const repostOutcome = await discloseInGoogleMeet(
+  fakePage({
+    participantSets: [[bot, alice]],
+    actions: repostActions,
+    verificationFailures: 1,
+  }),
+  'connection-meet-no-repost',
+  { ...config, participantDeadlineAt: new Date(Date.now() + 30_000).toISOString() },
+);
+check(
+  'confirms an already-rendered Meet notice on retry without posting it again',
+  repostOutcome.status === 'disclosed'
+    && repostActions.filter((action) => action === `fill:${text}`).length === 1,
+);
+
+const originalDateNow = Date.now;
+let fakeNow = 1_000;
+Date.now = () => fakeNow;
 let unsentDisclosureRejected = false;
 try {
   await discloseInGoogleMeet(
@@ -207,13 +275,15 @@ try {
       participantSets: [[bot, alice]],
       actions: [],
       submissionRenders: false,
+      advanceTime: (milliseconds) => { fakeNow += milliseconds; },
     }),
     'connection-unsent',
-    config,
+    { ...config, participantDeadlineAt: new Date(fakeNow + 500).toISOString() },
   );
 } catch (error) {
   unsentDisclosureRejected = String(error).includes('sent text could not be verified');
 }
+Date.now = originalDateNow;
 check('rejects a disclosure retained only in the composer', unsentDisclosureRejected);
 
 const bob = participant('bob', 'Bob Example');
@@ -239,8 +309,7 @@ check(
 );
 check('stops the participant monitor', monitorCancelled);
 
-const originalDateNow = Date.now;
-let fakeNow = 1_000;
+fakeNow = 1_000;
 Date.now = () => fakeNow;
 const emptyOutcome = await discloseInGoogleMeet(
   fakePage({

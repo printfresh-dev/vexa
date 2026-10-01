@@ -37,9 +37,14 @@ export interface GmeetSpeakersOptions {
    *  (the data-self-name marker can render late). Lets the channel binder pin a sticky
    *  self name it refuses to bind to any remote channel — the leak-proof backstop. */
   onSelf?: (name: string) => void;
-  /** Every tile scan reports the count of non-self tiles and whether Meet's structural
-   *  self marker was found. */
-  onRoster?: (remoteParticipantCount: number, selfPresent: boolean, tileCount: number) => void;
+  /** Every tile scan reports non-self count, positive self identification, participant-tile
+   *  count, and the labels used to classify those tiles. */
+  onRoster?: (
+    remoteParticipantCount: number,
+    selfPresent: boolean,
+    tileCount: number,
+    tileLabels: readonly string[],
+  ) => void;
   /** Log sink (defaults to console.log). */
   log?: (msg: string) => void;
   /** Poll interval (ms). Default 500. */
@@ -48,6 +53,7 @@ export interface GmeetSpeakersOptions {
 
 export interface GmeetTileInfo {
   id: string;
+  label: string;
   name: string | null;
   self: boolean;
   speaking: boolean;
@@ -99,9 +105,12 @@ const KNOWN_SPEAKING_CLASSES = [
 ];
 const JUNK_NAME = /^Google Participant \(|spaces\/|devices\//;
 const JUNK_PHRASES = ['let participants', 'send messages', 'turn on captions'];
+const EFFECTS_TILE = /visual_effects|backgrounds and effects/i;
+const SELF_LABEL = /(?:^|[\s,(])(?:you|me)(?:$|[\s,)])/i;
 
 export function createGmeetSpeakers(opts: GmeetSpeakersOptions = {}): GmeetSpeakers {
   const pollMs = opts.pollMs ?? 250;  // responsive: track the visible active-speaker glow closely
+  const normalizedSelfName = opts.selfName?.trim().toLocaleLowerCase() ?? '';
 
   const knownClassHits: Record<string, number> = {};
   let lastKnownHitMs = Date.now();
@@ -126,6 +135,10 @@ export function createGmeetSpeakers(opts: GmeetSpeakersOptions = {}): GmeetSpeak
     return t;
   }
 
+  function tileLabel(el: HTMLElement): string {
+    return (el.getAttribute('aria-label') || el.textContent || '').trim();
+  }
+
   // The local participant's tile, located via Meet's OWN structural marker
   // (data-self-name). Re-read every scan — the self tile can render late or move,
   // and the marker may sit on a child or sibling of the participant tile.
@@ -135,12 +148,23 @@ export function createGmeetSpeakers(opts: GmeetSpeakersOptions = {}): GmeetSpeak
     return tile?.getAttribute('data-participant-id') || null;
   }
 
-  // Self/host detection is PURELY STRUCTURAL — Meet's data-self-name marker, never
-  // name/aria text matching. The host tile is excluded so it can never emit a hint.
-  function isSelf(el: HTMLElement, id: string, selfId: string | null): boolean {
+  // Keep these semantic fallbacks in lockstep with disclosure.ts remoteParticipantKeys:
+  // Meet may render the local tile without data-self-name, but still label it "You" or
+  // include the configured bot name in its accessible label/text.
+  function isSelf(
+    el: HTMLElement,
+    id: string,
+    selfId: string | null,
+    name: string | null,
+    label: string,
+  ): boolean {
+    const normalizedLabel = label.toLocaleLowerCase();
     return el.hasAttribute('data-self-name')
       || !!el.querySelector('[data-self-name]')
-      || (selfId !== null && id === selfId);
+      || (selfId !== null && id === selfId)
+      || SELF_LABEL.test(label)
+      || (normalizedSelfName.length > 0 && normalizedLabel.includes(normalizedSelfName))
+      || (name !== null && name.trim().toLocaleLowerCase() === normalizedSelfName);
   }
 
   function tileSpeaking(el: HTMLElement): boolean {
@@ -165,10 +189,11 @@ export function createGmeetSpeakers(opts: GmeetSpeakersOptions = {}): GmeetSpeak
         if (!id || seen.has(id)) return;
         seen.add(id);
         const name = tileName(el);
-        // The signed-in bot's own tile does not always carry data-self-name; its display name
-        // (the configured bot name) identifies it then. Only the roster and hint exclusion use this.
-        const self = isSelf(el, id, selfId) || (opts.selfName !== undefined && name === opts.selfName);
-        out.push({ id, name, self, speaking: tileSpeaking(el) });
+        const label = tileLabel(el) || name || id;
+        const normalizedLabel = label.toLocaleLowerCase();
+        if (EFFECTS_TILE.test(normalizedLabel) || normalizedLabel === 'participants') return;
+        const self = isSelf(el, id, selfId, name, label);
+        out.push({ id, name, label, self, speaking: tileSpeaking(el) });
       });
     }
     return out;
@@ -194,7 +219,14 @@ export function createGmeetSpeakers(opts: GmeetSpeakersOptions = {}): GmeetSpeak
         remoteParticipantCount++;
       }
     }
-    try { opts.onRoster?.(remoteParticipantCount, selfPresent, tiles.length); } catch { /* consumer error */ }
+    try {
+      opts.onRoster?.(
+        remoteParticipantCount,
+        selfPresent,
+        tiles.length,
+        tiles.map((tile) => tile.label),
+      );
+    } catch { /* consumer error */ }
 
     // Currently-lit, non-self, named tiles.
     const litNow = new Set<string>(

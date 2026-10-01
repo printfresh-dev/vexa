@@ -104,23 +104,48 @@ const tile = (id: string, name: string, opts: { speaking?: boolean; self?: boole
   sp.destroy();
 }
 {
-  // Production 2026-09-30: the signed-in bot's tile had no data-self-name, so the roster was
-  // never trusted. The configured bot name identifies the bot's own tile then.
-  const roster: { remoteParticipants: number; selfPresent: boolean; tiles: number }[] = [];
+  // Meet can omit data-self-name and identify the local tile only through its label.
+  const roster: {
+    remoteParticipants: number;
+    selfPresent: boolean;
+    tiles: number;
+    labels: readonly string[];
+  }[] = [];
   const hints: { name: string }[] = [];
-  setDoc(e('body', {}, [ tile('bot', 'Volta Notetaker', { speaking: true }), tile('p2', 'Dana') ]));
+  setDoc(e('body', {}, [ tile('bot', 'You', { speaking: true }), tile('p2', 'Dana') ]));
   const sp = createGmeetSpeakers({
     pollMs: 10,
     selfName: 'Volta Notetaker',
     onSpeaking: (name) => hints.push({ name }),
-    onRoster: (remoteParticipants, selfPresent, tiles) => roster.push({ remoteParticipants, selfPresent, tiles }),
+    onRoster: (remoteParticipants, selfPresent, tiles, labels) =>
+      roster.push({ remoteParticipants, selfPresent, tiles, labels }),
   });
   tick();
-  check('bot tile found by its configured name', roster.some((r) => r.remoteParticipants === 1 && r.selfPresent && r.tiles === 2));
-  check('bot tile found by name never emits', !hints.some((h) => h.name === 'Volta Notetaker'));
+  check('tile labelled You counts as self without data-self-name',
+    roster.at(-1)?.remoteParticipants === 1 && roster.at(-1)?.selfPresent === true);
+  check('You self tile never emits', !hints.some((hint) => hint.name === 'You'));
+
+  setDoc(e('body', {}, [ tile('bot', 'Volta Notetaker recording'), tile('p2', 'Dana') ]));
+  tick();
+  check('tile containing the configured bot name counts as self',
+    roster.at(-1)?.remoteParticipants === 1 && roster.at(-1)?.selfPresent === true);
+
+  setDoc(e('body', {}, [
+    tile('bot', 'Volta Notetaker'),
+    tile('p2', 'Dana'),
+    tile('effects', 'Backgrounds and effects'),
+    tile('people', 'Participants'),
+  ]));
+  tick();
+  check('effects and Participants tiles are excluded from the roster',
+    roster.at(-1)?.remoteParticipants === 1
+      && roster.at(-1)?.tiles === 2
+      && roster.at(-1)?.labels.join(', ') === 'Volta Notetaker, Dana');
+
   setDoc(e('body', {}, [ tile('bot', 'Volta Notetaker') ]));
   tick();
-  check('everyone gone leaves only the bot', roster.at(-1)?.remoteParticipants === 0 && roster.at(-1)?.selfPresent === true);
+  check('everyone gone leaves only the bot',
+    roster.at(-1)?.remoteParticipants === 0 && roster.at(-1)?.selfPresent === true);
   sp.destroy();
 }
 {

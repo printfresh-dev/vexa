@@ -109,7 +109,7 @@ export function createRosterPresenceTap(options: {
         return;
       }
       const hasSeenRemoteParticipant =
-        state.hasSeenRemoteParticipant || (selfPresent && remoteParticipantCount > 0);
+        state.hasSeenRemoteParticipant || remoteParticipantCount > 0;
       const emptySince = selfPresent && remoteParticipantCount === 0
         ? state.selfPresent && state.remoteParticipantCount === 0
           ? state.emptySince
@@ -134,13 +134,10 @@ export function createMeetRosterAlonenessAdapter(
     name: 'meet-roster',
     evaluate(_activity, now): AlonenessVerdict {
       const snapshot = roster.snapshot();
-      if (!snapshot.hasSeenRemoteParticipant
-        || snapshot.remoteParticipantCount === undefined
-        || !snapshot.selfPresent) return 'unavailable';
+      if (snapshot.remoteParticipantCount === undefined || !snapshot.selfPresent) return 'unavailable';
       if (snapshot.remoteParticipantCount > 0) return 'not-alone';
-      return snapshot.emptySince !== undefined && now - snapshot.emptySince >= debounceMs
-        ? 'alone'
-        : 'not-alone';
+      if (!snapshot.hasSeenRemoteParticipant || snapshot.emptySince === undefined) return 'unavailable';
+      return now - snapshot.emptySince >= debounceMs ? 'alone' : 'unavailable';
     },
   };
 }
