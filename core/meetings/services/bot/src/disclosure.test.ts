@@ -47,6 +47,7 @@ function fakePage(input: {
   meetOverlayOpen?: boolean;
   chatClickFailures?: number;
   verificationFailures?: number;
+  meetScrimOpen?: boolean;
 }): Page {
   let participantRead = 0;
   let chatOpen = input.chatInitiallyOpen ?? false;
@@ -56,11 +57,12 @@ function fakePage(input: {
   let meetOverlayOpen = input.meetOverlayOpen ?? false;
   let chatClickFailures = input.chatClickFailures ?? 0;
   let verificationFailures = input.verificationFailures ?? 0;
+  let meetScrimOpen = input.meetScrimOpen ?? false;
   const chatButton = {
     isVisible: async () => true,
     click: async () => {
       input.actions.push('chat-click');
-      if (zoomPopupOpen || meetOverlayOpen) throw new Error('chat button is covered by popup');
+      if (zoomPopupOpen || meetOverlayOpen || meetScrimOpen) throw new Error('chat button is covered by popup');
       if (chatClickFailures > 0) {
         chatClickFailures -= 1;
         throw new Error('transient chat click failure');
@@ -130,6 +132,12 @@ function fakePage(input: {
       input.advanceTime?.(milliseconds);
     },
     isClosed: () => false,
+    keyboard: {
+      press: async (key: string) => {
+        input.actions.push(`key:${key}`);
+        if (key === 'Escape') meetScrimOpen = false;
+      },
+    },
   } as unknown as Page;
 }
 
@@ -246,6 +254,20 @@ check(
   retryOutcome.status === 'disclosed'
     && retryActions.filter((action) => action === 'chat-click').length === 2
     && retryActions.filter((action) => action === `fill:${text}`).length === 1,
+);
+
+// Live 2026-10-01: a Meet scrim intercepted every chat click; Escape closes it before chat.
+const scrimActions: string[] = [];
+const scrimOutcome = await discloseInGoogleMeet(
+  fakePage({ participantSets: [[bot, alice]], actions: scrimActions, meetScrimOpen: true }),
+  'connection-meet-scrim',
+  config,
+);
+check(
+  'Escape closes an intercepting Meet scrim before the first chat click',
+  scrimOutcome.status === 'disclosed'
+    && scrimActions.indexOf('key:Escape') < scrimActions.indexOf('chat-click')
+    && scrimActions.filter((action) => action === 'chat-click').length === 1,
 );
 
 // Production risk: a notice that posted but failed verification must not be posted again.

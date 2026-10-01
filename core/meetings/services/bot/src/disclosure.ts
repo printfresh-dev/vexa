@@ -104,6 +104,10 @@ async function firstVisibleNow(
 }
 
 async function dismissGoogleMeetPopups(page: Page): Promise<void> {
+  // Live 2026-10-01: a click-to-close scrim (<div jsname="GGAcbc" jsaction="click:KY1IRb">)
+  // intercepted every chat click for minutes. Escape closes Meet dialogs and side sheets
+  // without leaving the call.
+  try { await page.keyboard.press('Escape'); } catch { /* no keyboard in this context */ }
   for (const selector of GOOGLE_TRANSIENT_OVERLAY_SELECTORS) {
     try {
       const button = page.locator(selector).first();
