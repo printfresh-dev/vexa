@@ -104,6 +104,26 @@ const tile = (id: string, name: string, opts: { speaking?: boolean; self?: boole
   sp.destroy();
 }
 {
+  // Production 2026-09-30: the signed-in bot's tile had no data-self-name, so the roster was
+  // never trusted. The configured bot name identifies the bot's own tile then.
+  const roster: { remoteParticipants: number; selfPresent: boolean; tiles: number }[] = [];
+  const hints: { name: string }[] = [];
+  setDoc(e('body', {}, [ tile('bot', 'Volta Notetaker', { speaking: true }), tile('p2', 'Dana') ]));
+  const sp = createGmeetSpeakers({
+    pollMs: 10,
+    selfName: 'Volta Notetaker',
+    onSpeaking: (name) => hints.push({ name }),
+    onRoster: (remoteParticipants, selfPresent, tiles) => roster.push({ remoteParticipants, selfPresent, tiles }),
+  });
+  tick();
+  check('bot tile found by its configured name', roster.some((r) => r.remoteParticipants === 1 && r.selfPresent && r.tiles === 2));
+  check('bot tile found by name never emits', !hints.some((h) => h.name === 'Volta Notetaker'));
+  setDoc(e('body', {}, [ tile('bot', 'Volta Notetaker') ]));
+  tick();
+  check('everyone gone leaves only the bot', roster.at(-1)?.remoteParticipants === 0 && roster.at(-1)?.selfPresent === true);
+  sp.destroy();
+}
+{
   // Junk names ("Google Participant (…", caption phrases) are filtered out.
   const hints: { name: string }[] = [];
   const junk = e('div', { 'data-participant-id': 'j1', class: 'Oaajhc' }, [ t('span', 'Google Participant (guest)', { class: 'notranslate' }) ]);

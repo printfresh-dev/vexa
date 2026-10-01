@@ -319,10 +319,18 @@ export async function startCaptureBridge(
     if (!String(e.message).includes('already registered')) throw e;
   });
   if (roster) {
+    let lastRosterSummary = '';
     await page.exposeFunction(
       '__vexaRosterPresence',
-      (remoteParticipantCount: number, selfPresent: boolean): void =>
-        roster.observe(remoteParticipantCount, selfPresent),
+      (remoteParticipantCount: number, selfPresent: boolean, tileCount?: number): void => {
+        // One line per change, so a live meeting shows what the leave rule saw.
+        const summary = `remote=${remoteParticipantCount} self=${selfPresent} tiles=${tileCount ?? '?'}`;
+        if (summary !== lastRosterSummary) {
+          lastRosterSummary = summary;
+          console.log(`[bot] roster: ${summary}`);
+        }
+        roster.observe(remoteParticipantCount, selfPresent);
+      },
     ).catch((e: Error) => {
       if (!String(e.message).includes('already registered')) throw e;
     });
@@ -441,8 +449,8 @@ export async function startCaptureBridge(
           onSpeaking: (name: string, isEnd: boolean) =>
             channelBinder?.recordGlow(name, isEnd, Date.now()),
           onSelf: (name: string) => channelBinder?.setSelfName(name),
-          onRoster: (remoteParticipantCount: number, selfPresent: boolean) =>
-            w.__vexaRosterPresence?.(remoteParticipantCount, selfPresent),
+          onRoster: (remoteParticipantCount: number, selfPresent: boolean, tileCount: number) =>
+            w.__vexaRosterPresence?.(remoteParticipantCount, selfPresent, tileCount),
         });
       w.__vexaGmeetCapture = w.VexaBrowserUtils.createGmeetCapture({
         log: (m: string) => w.logBot?.('[PerSpeaker] ' + m),
