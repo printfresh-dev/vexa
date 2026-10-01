@@ -110,8 +110,10 @@ export function createRosterPresenceTap(options: {
       }
       const hasSeenRemoteParticipant =
         state.hasSeenRemoteParticipant || remoteParticipantCount > 0;
-      const emptySince = selfPresent && remoteParticipantCount === 0
-        ? state.selfPresent && state.remoteParticipantCount === 0
+      // Meet never lists the signed-in bot's own tile (live logs 2026-10-01), so emptiness is
+      // judged on remote participants alone; selfPresent is kept for diagnostics only.
+      const emptySince = remoteParticipantCount === 0
+        ? state.remoteParticipantCount === 0 && state.emptySince !== undefined
           ? state.emptySince
           : now()
         : undefined;
@@ -126,18 +128,34 @@ export function createRosterPresenceTap(options: {
   };
 }
 
+/** Remote audio must also have been silent this long before an empty roster ends the meeting. */
+export const DEFAULT_MEET_ROSTER_SILENCE_CONFIRM_MS = 20_000;
+
+/**
+ * Leaves an emptied Google Meet early: remote participants were seen this session, the roster has
+ * listed none for the debounce, and no remote audio arrived for the confirm window (so a broken
+ * scan cannot end a meeting people are talking in). It never returns 'not-alone': the roster only
+ * shortens the silence rule's wait, it never extends it.
+ */
 export function createMeetRosterAlonenessAdapter(
   roster: RosterPresenceSource,
   debounceMs = DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS,
+  silenceConfirmMs = DEFAULT_MEET_ROSTER_SILENCE_CONFIRM_MS,
 ): AlonenessAdapter {
   return {
     name: 'meet-roster',
-    evaluate(_activity, now): AlonenessVerdict {
+    evaluate(activity, now): AlonenessVerdict {
       const snapshot = roster.snapshot();
-      if (snapshot.remoteParticipantCount === undefined || !snapshot.selfPresent) return 'unavailable';
-      if (snapshot.remoteParticipantCount > 0) return 'not-alone';
-      if (!snapshot.hasSeenRemoteParticipant || snapshot.emptySince === undefined) return 'unavailable';
-      return now - snapshot.emptySince >= debounceMs ? 'alone' : 'unavailable';
+      if (
+        !snapshot.hasSeenRemoteParticipant
+        || snapshot.remoteParticipantCount !== 0
+        || snapshot.emptySince === undefined
+        || now - snapshot.emptySince < debounceMs
+        || !activity.available
+        || activity.lastRemoteAudioAt === undefined
+        || now - activity.lastRemoteAudioAt < silenceConfirmMs
+      ) return 'unavailable';
+      return 'alone';
     },
   };
 }

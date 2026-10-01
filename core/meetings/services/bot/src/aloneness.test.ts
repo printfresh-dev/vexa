@@ -2,6 +2,7 @@
 import {
   DEFAULT_ALONE_SILENCE_WINDOW_MS,
   DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS,
+  DEFAULT_MEET_ROSTER_SILENCE_CONFIRM_MS,
   createMeetRosterAlonenessAdapter,
   createRemoteAudioActivityTap,
   createRosterPresenceTap,
@@ -232,68 +233,76 @@ function meetFixture(silenceWindowMs = 1_000) {
   check('a future adapter can veto the silence verdict', fired === 0);
 }
 
-// Meeting B: ordinary scans do not render self, then the everyone-left scan finds only self.
-// A previously seen remote makes that trusted zero fire after the five-second debounce.
+// Live 2026-10-01: the bot's own tile is never listed; as people leave the roster counts down to
+// zero. Once remote audio has also been silent for the confirm window, the empty roster ends the
+// meeting long before the silence rule's two minutes.
 {
-  const f = meetFixture(60_000);
+  const f = meetFixture(120_000);
   let fired = 0;
-  for (const remote of [5, 4, 3, 2, 1]) f.roster.observe(remote, false);
+  for (const remote of [4, 2, 1]) f.roster.observe(remote, false);
   f.source.onAlone(() => fired++);
-  f.roster.observe(0, true);
-  f.clock.advance(DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS - 1); f.scheduler.tick();
-  check('empty Meet roster waits for the five-second debounce', fired === 0);
+  f.roster.observe(0, false);
+  f.clock.advance(DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS); f.scheduler.tick();
+  check('empty roster waits for remote audio to be silent for the confirm window', fired === 0);
+  f.clock.advance(DEFAULT_MEET_ROSTER_SILENCE_CONFIRM_MS - DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS - 1);
+  f.scheduler.tick();
+  check('empty roster does not fire one millisecond early', fired === 0);
   f.clock.advance(1); f.scheduler.tick();
-  check('meeting-B countdown fires when only the bot remains for five seconds', fired === 1);
+  check('emptied Meet ends after the confirm window, not the silence window', fired === 1);
   check('roster verdict names its adapter in the log',
     f.logs.length === 1 && f.logs[0].includes('meet-roster'));
 }
 
+// A broken scan that reports zero tiles cannot end a meeting people are talking in.
+{
+  const f = meetFixture(120_000);
+  let fired = 0;
+  f.roster.observe(2, false);
+  f.source.onAlone(() => fired++);
+  f.roster.observe(0, false);
+  for (let second = 0; second < 60; second++) {
+    f.clock.advance(1_000);
+    f.activity.observeRemoteEnergy(0.02);
+    f.scheduler.tick();
+  }
+  check('an empty roster never fires while remote audio is still arriving', fired === 0);
+}
+
 // A transient empty render is cancelled when a remote participant returns.
 {
-  const f = meetFixture();
+  const f = meetFixture(120_000);
   let fired = 0;
-  f.roster.observe(1, true);
+  f.roster.observe(1, false);
   f.source.onAlone(() => fired++);
-  f.roster.observe(0, true);
+  f.roster.observe(0, false);
   f.clock.advance(DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS - 1);
-  f.roster.observe(1, true);
-  f.clock.advance(10_000); f.scheduler.tick();
+  f.roster.observe(1, false);
+  f.clock.advance(30_000); f.scheduler.tick();
   check('participant returning inside five seconds cancels the roster verdict', fired === 0);
 }
 
-// An initially empty roster is unavailable until this session has seen a real remote participant.
+// Nobody has arrived yet: an empty roster is untrusted, so the bot keeps waiting for attendees.
 {
-  const f = meetFixture(10_000);
+  const f = meetFixture(120_000);
   let fired = 0;
-  f.roster.observe(0, true);
+  f.roster.observe(0, false);
   f.source.onAlone(() => fired++);
-  f.clock.advance(DEFAULT_MEET_ROSTER_EMPTY_DEBOUNCE_MS); f.scheduler.tick();
+  f.clock.advance(60_000); f.scheduler.tick();
   check('empty roster is not trusted before a remote participant is seen', fired === 0);
-  f.clock.advance(5_000); f.scheduler.tick();
+  f.clock.advance(60_000); f.scheduler.tick();
   check('untrusted roster falls back to the unchanged silence window',
     fired === 1 && f.logs[0]?.includes('silence'));
 }
 
-// Remote tiles without a positive self marker leave the roster unavailable, even after the
-// session has seen participants, so the unchanged silence rule decides.
+// The roster only shortens the wait: listed participants never veto the silence rule.
 {
-  const f = meetFixture();
-  let fired = 0;
-  f.roster.observe(1, false);
-  f.source.onAlone(() => fired++);
-  f.clock.advance(1_000); f.scheduler.tick();
-  check('remote participants with self=false leave roster unavailable and silence decides',
-    fired === 1 && f.logs[0]?.includes('silence'));
-}
-
-// A non-empty roster vetoes silence only while the bot's own tile is positively identified.
-{
-  const f = meetFixture();
+  const f = meetFixture(1_000);
   let fired = 0;
   f.roster.observe(1, true);
   f.source.onAlone(() => fired++);
-  f.clock.advance(60_000); f.scheduler.tick();
-  check('quiet Meet with remote participants and self present never goes alone', fired === 0);
+  f.clock.advance(1_000); f.scheduler.tick();
+  check('listed participants never keep the bot past the silence rule',
+    fired === 1 && f.logs[0]?.includes('silence'));
 }
 
 // Platforms without the Meet roster adapter retain the original silence-only rule.
