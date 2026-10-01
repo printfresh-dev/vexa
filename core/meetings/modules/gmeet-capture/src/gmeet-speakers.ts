@@ -39,7 +39,7 @@ export interface GmeetSpeakersOptions {
   onSelf?: (name: string) => void;
   /** Every tile scan reports the count of non-self tiles and whether Meet's structural
    *  self marker was found. */
-  onRoster?: (remoteParticipantCount: number, selfPresent: boolean) => void;
+  onRoster?: (remoteParticipantCount: number, selfPresent: boolean, tileCount: number) => void;
   /** Log sink (defaults to console.log). */
   log?: (msg: string) => void;
   /** Poll interval (ms). Default 500. */
@@ -165,7 +165,10 @@ export function createGmeetSpeakers(opts: GmeetSpeakersOptions = {}): GmeetSpeak
         if (!id || seen.has(id)) return;
         seen.add(id);
         const name = tileName(el);
-        out.push({ id, name, self: isSelf(el, id, selfId), speaking: tileSpeaking(el) });
+        // The signed-in bot's own tile does not always carry data-self-name; its display name
+        // (the configured bot name) identifies it then. Only the roster and hint exclusion use this.
+        const self = isSelf(el, id, selfId) || (opts.selfName !== undefined && name === opts.selfName);
+        out.push({ id, name, self, speaking: tileSpeaking(el) });
       });
     }
     return out;
@@ -191,7 +194,7 @@ export function createGmeetSpeakers(opts: GmeetSpeakersOptions = {}): GmeetSpeak
         remoteParticipantCount++;
       }
     }
-    try { opts.onRoster?.(remoteParticipantCount, selfPresent); } catch { /* consumer error */ }
+    try { opts.onRoster?.(remoteParticipantCount, selfPresent, tiles.length); } catch { /* consumer error */ }
 
     // Currently-lit, non-self, named tiles.
     const litNow = new Set<string>(
