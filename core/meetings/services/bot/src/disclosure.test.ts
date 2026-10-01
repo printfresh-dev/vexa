@@ -46,6 +46,7 @@ function fakePage(input: {
   zoomPopupOpen?: boolean;
   meetOverlayOpen?: boolean;
   chatClickFailures?: number;
+  verificationFailures?: number;
 }): Page {
   let participantRead = 0;
   let chatOpen = input.chatInitiallyOpen ?? false;
@@ -54,6 +55,7 @@ function fakePage(input: {
   let zoomPopupOpen = input.zoomPopupOpen ?? false;
   let meetOverlayOpen = input.meetOverlayOpen ?? false;
   let chatClickFailures = input.chatClickFailures ?? 0;
+  let verificationFailures = input.verificationFailures ?? 0;
   const chatButton = {
     isVisible: async () => true,
     click: async () => {
@@ -105,7 +107,7 @@ function fakePage(input: {
           },
         };
       }
-      if (selector.includes(':has-text(') || selector === 'button[aria-label="Close"]') {
+      if (selector.includes(':has-text(') || selector.includes(':text-is(') || selector === 'button[aria-label="Close"]') {
         return { first: () => popupButton };
       }
       if (selector.includes('textarea') || selector.includes('contenteditable')) {
@@ -117,6 +119,10 @@ function fakePage(input: {
       return { first: () => ({ isVisible: async () => false }) };
     },
     waitForFunction: async () => {
+      if (verificationFailures > 0) {
+        verificationFailures -= 1;
+        throw new Error('message was not visible yet');
+      }
       if (composerText !== '' || !renderedText) throw new Error('message was not rendered');
     },
     waitForTimeout: async (milliseconds: number) => {
@@ -240,6 +246,23 @@ check(
   retryOutcome.status === 'disclosed'
     && retryActions.filter((action) => action === 'chat-click').length === 2
     && retryActions.filter((action) => action === `fill:${text}`).length === 1,
+);
+
+// Production risk: a notice that posted but failed verification must not be posted again.
+const repostActions: string[] = [];
+const repostOutcome = await discloseInGoogleMeet(
+  fakePage({
+    participantSets: [[bot, alice]],
+    actions: repostActions,
+    verificationFailures: 1,
+  }),
+  'connection-meet-no-repost',
+  { ...config, participantDeadlineAt: new Date(Date.now() + 30_000).toISOString() },
+);
+check(
+  'confirms an already-rendered Meet notice on retry without posting it again',
+  repostOutcome.status === 'disclosed'
+    && repostActions.filter((action) => action === `fill:${text}`).length === 1,
 );
 
 const originalDateNow = Date.now;

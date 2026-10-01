@@ -24,14 +24,13 @@ const GOOGLE_CHAT_INPUT_SELECTORS = [
   '[contenteditable="true"][data-placeholder*="message" i]',
 ] as const;
 
-// Reuse the join layer's existing Meet affordances: tip acknowledgements, removal-modal
-// dismissal, and the post-join Close button.
+// Meet's post-join tips and dialogs. Exact labels only: substring matches such as
+// aria-label*="ok" would also hit unrelated controls in the meeting UI.
 const GOOGLE_TRANSIENT_OVERLAY_SELECTORS = [
-  'button:has-text("Got it")',
-  'button:has-text("Dismiss")',
-  'button[aria-label*="dismiss" i]',
-  'button:has-text("OK")',
-  'button[aria-label*="ok" i]',
+  'button:text-is("Got it")',
+  'button:text-is("Dismiss")',
+  'button:text-is("OK")',
+  'button[aria-label="Dismiss"]',
   'button[aria-label="Close"]',
 ] as const;
 
@@ -266,6 +265,15 @@ async function postDisclosure(
     throw new Error(`disclosure_failed: sent text could not be verified in ${platformName} chat`);
   }
   throwIfAborted(signal);
+  await reportDisclosureVerified(connectionId, config, renderedAt, signal);
+}
+
+async function reportDisclosureVerified(
+  connectionId: string,
+  config: VoltaDisclosureConfig,
+  renderedAt: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const verifiedAt = new Date().toISOString();
   let response: Response;
   try {
@@ -293,6 +301,9 @@ async function postDisclosure(
   }
 }
 
+/** In-join attempts at the Meet notice; bounds repeat posts if verification itself is broken. */
+const MEET_DISCLOSURE_MAX_ATTEMPTS = 6;
+
 export async function discloseInMeeting(
   page: Page,
   connectionId: string,
@@ -315,13 +326,19 @@ export async function discloseInMeeting(
   let attempt = 1;
   while (true) {
     try {
-      await postDisclosure(page, connectionId, config, platform, signal);
+      // A retry must not post the notice again if an earlier attempt already rendered it
+      // (e.g. only verification or the callback failed): confirm the visible notice instead.
+      if (attempt > 1 && await verifyRenderedText(page, config.text)) {
+        await reportDisclosureVerified(connectionId, config, new Date().toISOString(), signal);
+      } else {
+        await postDisclosure(page, connectionId, config, platform, signal);
+      }
       return { status: 'disclosed', participantKeys };
     } catch (error) {
       throwIfAborted(signal);
       console.error(`[bot] disclosure: ${errorMessage(error)}`);
       const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) throw error;
+      if (remainingMs <= 0 || attempt >= MEET_DISCLOSURE_MAX_ATTEMPTS) throw error;
       await page.waitForTimeout(Math.min(DISCLOSURE_RETRY_MS, remainingMs));
       if (Date.now() > deadline) throw error;
       throwIfAborted(signal);
