@@ -75,11 +75,15 @@ export const googleConsentPromptIndicators: string[] = [
   '[role="dialog"]:has-text("take notes for me")',
   '[role="alertdialog"]:has-text("take notes for me")',
   'button:has-text("take notes for me")',
-  // Active-note status popovers also use role=dialog. Their Stop control proves
-  // notes are already running, not awaiting consent. Exclude those containers
-  // before selecting the first match so a separate consent dialog still blocks.
-  '[role="dialog"]:has-text("taking notes"):not(:has(button:has-text("Stop taking notes"), [role="button"]:has-text("Stop taking notes")))',
-  '[role="alertdialog"]:has-text("taking notes"):not(:has(button:has-text("Stop taking notes"), [role="button"]:has-text("Stop taking notes")))',
+  // Active-note status popovers ("Stop taking notes") and Gemini's offer to the bot's own
+  // account ("Remember what was discussed" / "Start taking notes") also use role=dialog and
+  // mention taking notes. Neither waits on anyone's consent: one proves notes already run,
+  // the other is an optional control the bot must simply ignore (Volta 2026-10-13: an
+  // admitted bot sat at waiting_for_admission behind the offer panel until it timed out).
+  // Exclude those containers before selecting the first match so a separate consent
+  // dialog still blocks.
+  '[role="dialog"]:has-text("taking notes"):not(:has(button:has-text("Stop taking notes"), [role="button"]:has-text("Stop taking notes"), button:has-text("Start taking notes"), [role="button"]:has-text("Start taking notes")))',
+  '[role="alertdialog"]:has-text("taking notes"):not(:has(button:has-text("Stop taking notes"), [role="button"]:has-text("Stop taking notes"), button:has-text("Start taking notes"), [role="button"]:has-text("Start taking notes")))',
 ];
 
 export const googleRejectionIndicators: string[] = [
