@@ -373,6 +373,10 @@ export const googleNameInputSelectors: string[] = [
 export const googleAuthJoinCtaSelectors: string[] = [
   // Exact text FIRST.
   'button:has-text("Join now")',
+  // Shown instead of "Join now" when no one else is in the call or everyone else declined.
+  // Without it the structural backstop below picked Gemini's lobby "Start" chip
+  // (Volta 2026-10-13: four bots stuck in the lobby behind "Meeting tools").
+  'button:has-text("Join anyway")',
   'button:has-text("Switch here")',
   'button:has-text("Ask to join")',
   // Broad structural backstop LAST.
