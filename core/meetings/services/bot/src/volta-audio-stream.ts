@@ -23,6 +23,7 @@ function deferred<T>(): {
 export interface VoltaAudioStream {
   push(speakerIndex: number, pcm: Float32Array, capturedAtMs: number, speakerName?: string | null): void;
   finish(): Promise<void>;
+  pushScreenKeyframe?(capturedAtMs: number, dhash: string, imageDataUrl: string): void;
 }
 
 class LiveVoltaAudioStream implements VoltaAudioStream {
@@ -83,6 +84,21 @@ class LiveVoltaAudioStream implements VoltaAudioStream {
       this.samples[target] = Math.max(-1, Math.min(1, this.samples[target]! + pcm[source]!));
     }
     this.highestSample = Math.max(this.highestSample, end);
+  }
+
+  pushScreenKeyframe(capturedAtMs: number, dhash: string, imageDataUrl: string): void {
+    if (this.finished || this.socket.readyState !== WebSocket.OPEN) return;
+    if (!/^[0-9a-f]{16}$/.test(dhash) || !imageDataUrl.startsWith('data:image/')) return;
+    const now = Date.now();
+    const timestamp = Number.isFinite(capturedAtMs) && Math.abs(capturedAtMs - now) <= MAX_TIMESTAMP_SKEW_MS
+      ? Math.round(capturedAtMs)
+      : now;
+    this.socket.send(JSON.stringify({
+      type: 'screen_keyframe',
+      captured_at_ms: Math.max(0, timestamp - this.originMs),
+      dhash,
+      image_data_url: imageDataUrl,
+    }));
   }
 
   async finish(): Promise<void> {

@@ -345,6 +345,11 @@ export async function startCaptureBridge(
   await page.exposeFunction('__vexaChatMessage', (sender: string, text: string): void => {
     try { onChat?.(sender, text); } catch (e) { console.error(`[bot] chat sink rejected: ${String(e)}`); }
   }).catch(() => { /* optional */ });
+  await page.exposeFunction('__vexaScreenKeyframe', (dhash: string, capturedAtMs: number, imageDataUrl: string): void => {
+    try {
+      voltaAudio?.pushScreenKeyframe?.(capturedAtMs, dhash, imageDataUrl);
+    } catch { /* screen keyframe capture must never break audio */ }
+  }).catch(() => { /* optional */ });
 
   // ── Start the page-side capture (VexaBrowserUtils preferred; production inline fallback). ──
   // The body of this callback runs IN THE BROWSER (Playwright serializes it); DOM globals are
@@ -483,6 +488,88 @@ export async function startCaptureBridge(
       await w.__vexaGmeetCapture.start();
       await w.__vexaRemoteAudioReady?.();
     }
+    if (!w.__vexaScreenShareWatcher && typeof w.__vexaScreenKeyframe === 'function') {
+      const doc = (globalThis as any).document;
+      const hashCanvas = doc.createElement('canvas');
+      hashCanvas.width = 9;
+      hashCanvas.height = 8;
+      const hashCtx = hashCanvas.getContext('2d', { willReadFrequently: true });
+      const snapCanvas = doc.createElement('canvas');
+      const snapCtx = snapCanvas.getContext('2d');
+      let lastEmitted: bigint | null = null;
+      let pendingHash: bigint | null = null;
+      let emittedCount = 0;
+      const popcount64 = (v: bigint): number => {
+        let x = v;
+        let c = 0;
+        while (x > 0n) { x &= x - 1n; c++; }
+        return c;
+      };
+      const findPresentationVideo = (): any => {
+        const videos = Array.from(doc.querySelectorAll('video')) as any[];
+        let best: any = null;
+        let bestArea = 0;
+        for (const v of videos) {
+          const vw = Number(v.videoWidth || 0);
+          const vh = Number(v.videoHeight || 0);
+          if (vw < 640 || vh < 360 || v.paused || (v.readyState ?? 0) < 2) continue;
+          const tile = v.closest?.('[data-is-presentation="true"], [data-allocation-index], [aria-label*="present" i], [aria-label*="screen" i]');
+          const isExplicitPresentation = Boolean(
+            v.closest?.('[data-is-presentation="true"]')
+            || (tile && /present|screen/i.test(String(tile.getAttribute?.('aria-label') || tile.textContent || ''))),
+          );
+          const isWideHighRes = vw >= 960 && vw >= vh * 1.25;
+          if (!isExplicitPresentation && !isWideHighRes) continue;
+          const area = vw * vh * (isExplicitPresentation ? 2 : 1);
+          if (area > bestArea) {
+            bestArea = area;
+            best = v;
+          }
+        }
+        return best;
+      };
+      w.__vexaScreenShareWatcher = (globalThis as any).setInterval(() => {
+        try {
+          if (emittedCount >= 25 || !hashCtx || !snapCtx) return;
+          const video = findPresentationVideo();
+          if (!video) { pendingHash = null; return; }
+          hashCtx.drawImage(video, 0, 0, 9, 8);
+          const rgba = hashCtx.getImageData(0, 0, 9, 8).data;
+          const luma = new Uint8Array(72);
+          for (let i = 0; i < 72; i++) {
+            const p = i * 4;
+            luma[i] = (rgba[p] * 77 + rgba[p + 1] * 150 + rgba[p + 2] * 29) >> 8;
+          }
+          let hash = 0n;
+          for (let r = 0; r < 8; r++) {
+            const off = r * 9;
+            for (let c = 0; c < 8; c++) {
+              hash = (hash << 1n) | (luma[off + c]! < luma[off + c + 1]! ? 1n : 0n);
+            }
+          }
+          if (lastEmitted !== null && popcount64(hash ^ lastEmitted) < 6) {
+            pendingHash = null;
+            return;
+          }
+          if (pendingHash === null || popcount64(hash ^ pendingHash) > 2) {
+            pendingHash = hash;
+            return;
+          }
+          lastEmitted = hash;
+          pendingHash = null;
+          emittedCount += 1;
+          const vw = Number(video.videoWidth || 1280);
+          const vh = Number(video.videoHeight || 720);
+          const scale = Math.min(1, 1280 / Math.max(vw, 1));
+          snapCanvas.width = Math.max(1, Math.round(vw * scale));
+          snapCanvas.height = Math.max(1, Math.round(vh * scale));
+          snapCtx.drawImage(video, 0, 0, snapCanvas.width, snapCanvas.height);
+          const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.72);
+          const hex = hash.toString(16).padStart(16, '0');
+          w.__vexaScreenKeyframe(hex, Date.now(), dataUrl);
+        } catch { /* ignore frame errors */ }
+      }, 3_000);
+    }
   }, { isMixed: mixed, isJitsi: jitsi, isTeams: inv.platform === 'teams', isZoom: inv.platform === 'zoom', botName: inv.botName }).catch((e) => {
     console.error(`[bot] capture bridge: page-side start failed: ${String(e)}`); // L4: surfaces only on the VM
   });
@@ -503,6 +590,7 @@ export async function startCaptureBridge(
       try { if (w.__vexaMixedCapture && typeof w.__vexaMixedCapture.stop === 'function') w.__vexaMixedCapture.stop(); } catch { /* best-effort */ }
       try { w.__vexaMixCtx?.close?.(); } catch { /* best-effort */ }
       try { w.__vexaGmeetSpeakers?.destroy?.(); } catch { /* best-effort */ }
+      try { if (w.__vexaScreenShareWatcher) { (globalThis as any).clearInterval(w.__vexaScreenShareWatcher); w.__vexaScreenShareWatcher = null; } } catch { /* */ }
     }).catch(() => { /* page already gone */ });
     await voltaAudio?.finish();
   };
