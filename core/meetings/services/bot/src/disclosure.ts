@@ -10,7 +10,9 @@ const GOOGLE_CHAT_BUTTON_SELECTORS = [
   'button:has(i.google-material-icons:text-is("chat"))',
 ] as const;
 
+// The footer button is labelled "open the chat panel" / "close the chat panel".
 const ZOOM_CHAT_BUTTON_SELECTORS = [
+  'button[aria-label*="chat panel" i]',
   'button[aria-label*="chat" i]',
   '[role="button"][aria-label*="chat" i]',
   'button[data-title*="chat" i]',
@@ -34,12 +36,22 @@ const GOOGLE_TRANSIENT_OVERLAY_SELECTORS = [
   'button[aria-label="Close"]',
 ] as const;
 
+// Zoom's composer is a TipTap (ProseMirror) editor that carries no label or placeholder of its own:
+//   .chat-rtf-box__editor-outer > .chat-rtf-box__editor-wrapper > div.tiptap.ProseMirror[contenteditable]
+// (live DOM, as recorded in the pre-0.12 bot's zoom/web/selectors.ts). The textarea and
+// aria-label selectors below it matched nothing: in Volta production from 2026-09 to 2026-11 the
+// bot was let into 28 Zoom meetings and left 27 of them with "Zoom chat input was not found".
 const ZOOM_CHAT_INPUT_SELECTORS = [
+  '.chat-rtf-box__editor-outer [contenteditable="true"]',
+  '.tiptap.ProseMirror[contenteditable="true"]',
   'textarea[placeholder*="message" i]',
   'textarea[aria-label*="message" i]',
   '.chat-box__chat-textarea',
   '[contenteditable="true"][aria-label*="message" i]',
 ] as const;
+
+// Every composer, so that text still sitting in one is never mistaken for a posted message.
+const COMPOSER_SELECTOR = [...GOOGLE_CHAT_INPUT_SELECTORS, ...ZOOM_CHAT_INPUT_SELECTORS].join(',');
 
 const ZOOM_PARTICIPANT_SELECTORS = [
   '.participants-item__display-name',
@@ -139,14 +151,8 @@ interface BrowserGlobal {
 }
 
 async function verifyRenderedText(page: Page, text: string): Promise<boolean> {
-  return page.waitForFunction((expected) => {
+  return page.waitForFunction(({ expected, composerSelector }) => {
     const browser = globalThis as unknown as BrowserGlobal;
-    const composerSelector = [
-      'textarea[aria-label*="message" i]',
-      'textarea[placeholder*="message" i]',
-      '[contenteditable="true"][aria-label*="message" i]',
-      '[contenteditable="true"][data-placeholder*="message" i]',
-    ].join(',');
     const composers = Array.from(browser.document.querySelectorAll(composerSelector));
     if (composers.some((element) => {
       const style = browser.getComputedStyle(element);
@@ -163,7 +169,7 @@ async function verifyRenderedText(page: Page, text: string): Promise<boolean> {
       if (style.display === 'none' || style.visibility === 'hidden') return false;
       return element.textContent?.trim() === expected;
     });
-  }, text, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
+  }, { expected: text, composerSelector: COMPOSER_SELECTOR }, { timeout: STEP_TIMEOUT_MS }).then(() => true, () => false);
 }
 
 async function remoteParticipantKeys(
